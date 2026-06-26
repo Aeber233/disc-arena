@@ -1,0 +1,19 @@
+{
+  "name": "disc-arena",
+  "version": "2026.6.27",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm --workspace @disc-arena/core run build",
+    "test": "npm --workspace @disc-arena/core test",
+    "typecheck": "npm --workspace @disc-arena/core run typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.1"
+  }
+}

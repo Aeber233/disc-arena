@@ -2,7 +2,7 @@ import { add, dot, length, scale, sub } from "../../math/vec2";
 import type { Vec2 } from "../../math/vec2";
 import type { BodyState } from "../../types/body";
 import type { MapData, StaticWallCollider } from "../../types/map";
-import type { BodyProxy } from "../../types/portal";
+import type { BodyProxy, ClipMask } from "../../types/portal";
 import type { SimulationEvent } from "../../types/simulation";
 
 export interface CollisionSolveResult {
@@ -11,8 +11,8 @@ export interface CollisionSolveResult {
 }
 
 /**
- * Minimal collision solver for circle proxies and static wall segments. Clip
- * masks and portal-specific filtering are reserved by type for later stages.
+ * Collision solver for circle proxies and static wall segments. Portal proxies
+ * use clip masks so only their visible half can produce contact feedback.
  */
 export function solveCollisions(
   proxies: BodyProxy[],
@@ -69,6 +69,13 @@ function solveProxyPair(
 
   const normal = distance === 0 ? { x: 1, y: 0 } : scale(delta, 1 / distance);
   const penetration = minDistance - distance;
+  const contactPoint = add(a.position, scale(normal, a.radius - penetration / 2));
+  if (
+    !isPointAllowedByClipMask(contactPoint, a.clipMask) ||
+    !isPointAllowedByClipMask(contactPoint, b.clipMask)
+  ) {
+    return [];
+  }
   const inverseMassA = a.mass > 0 ? 1 / a.mass : 0;
   const inverseMassB = b.mass > 0 ? 1 / b.mass : 0;
   const inverseMassTotal = inverseMassA + inverseMassB;
@@ -186,6 +193,10 @@ function solveWallCollision(
   emittedWalls: Set<string>
 ): SimulationEvent | undefined {
   const closest = closestPointOnSegment(proxy.position, wall.start, wall.end);
+  if (!isPointAllowedByClipMask(closest, proxy.clipMask)) {
+    return undefined;
+  }
+
   const offset = sub(proxy.position, closest);
   const distanceToWall = length(offset);
 
@@ -271,4 +282,14 @@ function wallNormal(
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function isPointAllowedByClipMask(point: Vec2, clipMask?: ClipMask): boolean {
+  if (!clipMask?.halfPlanes?.length) {
+    return true;
+  }
+
+  return clipMask.halfPlanes.every(
+    (halfPlane) => dot(sub(point, halfPlane.point), halfPlane.normal) >= -0.000001
+  );
 }

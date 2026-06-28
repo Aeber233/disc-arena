@@ -17,10 +17,59 @@ body {
     sans-serif;
 }
 
+#main-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 20, 18, 0.32);
+}
+
+#main-menu[hidden] {
+  display: none;
+}
+
+.menu-shell {
+  min-width: 280px;
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 8px;
+  background: rgba(12, 27, 20, 0.82);
+  color: #fff;
+}
+
+.menu-shell h1 {
+  margin: 0 0 18px;
+  font-size: 30px;
+  letter-spacing: 0;
+}
+
+.menu-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.menu-actions button {
+  height: 42px;
+  border: 1px solid rgba(255, 255, 255, 0.36);
+  border-radius: 6px;
+  background: rgba(248, 248, 243, 0.1);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.menu-actions button:hover {
+  background: rgba(248, 248, 243, 0.2);
+}
+
 #game {
   display: block;
   width: 100vw;
   height: 100vh;
+  image-rendering: pixelated;
   touch-action: none;
   cursor: crosshair;
 }
@@ -45,6 +94,24 @@ body {
   user-select: none;
 }
 
+#play-panel[hidden] {
+  display: none;
+}
+
+#play-menu {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 6px;
+  background: rgba(12, 27, 20, 0.72);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
 #reset {
   position: fixed;
   top: 64px;
@@ -59,11 +126,11 @@ body {
   cursor: pointer;
 }
 
+#play-menu:hover,
 #reset:hover {
   background: rgba(12, 27, 20, 0.9);
 }
 
-#mode-bar,
 #editor-panel {
   position: fixed;
   z-index: 2;
@@ -81,20 +148,14 @@ body {
   display: none;
 }
 
-#mode-bar {
-  top: 16px;
-  left: 16px;
-}
-
 #editor-panel {
   top: 16px;
-  left: 188px;
+  left: 16px;
   right: 16px;
   flex-direction: column;
   overflow-x: auto;
 }
 
-#mode-bar button,
 #editor-panel button,
 #editor-panel input {
   height: 32px;
@@ -105,7 +166,6 @@ body {
   font: inherit;
 }
 
-#mode-bar button,
 #editor-panel button {
   padding: 0 12px;
   cursor: pointer;
@@ -116,10 +176,8 @@ body {
   padding: 0 8px;
 }
 
-#mode-bar button:hover,
 #editor-panel button:hover,
 #editor-panel input:hover,
-#mode-bar button.is-active,
 #editor-panel button.is-active {
   background: rgba(248, 248, 243, 0.18);
 }
@@ -131,13 +189,13 @@ body {
   gap: 8px;
 }
 
-.editor-tab-panel {
+.editor-menu-panel {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.editor-tab-panel[hidden] {
+.editor-menu-panel[hidden] {
   display: none;
 }
 

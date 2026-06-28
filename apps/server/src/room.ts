@@ -1,9 +1,9 @@
 import {
   allBodiesSleeping,
-  createTestMapGameState,
+  billiardsMapData,
+  createBilliardsGameState,
   hashGameState,
-  simulateShot,
-  testMapData
+  simulateShot
 } from "@disc-arena/core";
 import type {
   GameState,
@@ -43,7 +43,7 @@ const authoritativeSimulationOptions: SimulationOptions = {
 };
 
 export class PublicTestMapRoom {
-  private gameState: GameState = createTestMapGameState();
+  private gameState: GameState = createBilliardsGameState();
   private readonly players = new Map<string, RoomPlayer>();
   private readonly socketToPlayer = new Map<string, string>();
   private nextJoinIndex = 1;
@@ -90,7 +90,7 @@ export class PublicTestMapRoom {
 
   reset(): RoomStatePayload {
     const currentPlayers = this.connectedPlayers();
-    this.gameState = createTestMapGameState();
+    this.gameState = createBilliardsGameState();
     this.syncPlayersToGameState();
     this.gameState.currentPlayerId = currentPlayers[0]?.playerId ?? "";
     this.gameState.phase = "waiting_for_shot";
@@ -124,7 +124,7 @@ export class PublicTestMapRoom {
 
     const simulationResult = simulateShot(
       this.gameState,
-      testMapData,
+      billiardsMapData,
       payload.shotIntent,
       authoritativeSimulationOptions
     );
@@ -154,7 +154,7 @@ export class PublicTestMapRoom {
     const payload: RoomStatePayload = {
       roomId: ROOM_ID,
       players: this.publicPlayers(),
-      mapData: testMapData,
+      mapData: billiardsMapData,
       gameState: this.cloneState(),
       stateHash: this.stateHash()
     };

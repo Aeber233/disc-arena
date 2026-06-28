@@ -26,6 +26,49 @@ describe("buildBodyProxies", () => {
       portalPath: []
     });
   });
+
+  it("creates one non-recursive portal shadow when a body overlaps a portal", () => {
+    const bodies: BodyState[] = [
+      {
+        ...makeBody("crossing", true),
+        position: { x: 4, y: 0 },
+        radius: 10
+      }
+    ];
+    const mapData: MapData = {
+      id: "portal-map",
+      colliders: [],
+      triggers: [],
+      portals: [
+        {
+          id: "pair",
+          a: {
+            id: "a",
+            position: { x: 0, y: 0 },
+            normal: { x: 1, y: 0 },
+            width: 80
+          },
+          b: {
+            id: "b",
+            position: { x: 100, y: 0 },
+            normal: { x: -1, y: 0 },
+            width: 80
+          }
+        }
+      ]
+    };
+
+    const proxies = buildBodyProxies(bodies, mapData);
+    const shadow = proxies.find((proxy) => proxy.kind === "portal_shadow");
+
+    expect(proxies).toHaveLength(2);
+    expect(shadow).toMatchObject({
+      bodyId: "crossing",
+      portalPairId: "pair",
+      portalPath: ["pair"]
+    });
+    expect(shadow?.portalPath).toHaveLength(1);
+  });
 });
 
 function makeBody(id: string, alive: boolean): BodyState {

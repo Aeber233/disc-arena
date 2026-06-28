@@ -26,6 +26,8 @@ export * from "./physics/portals/commitPortalTransitions";
 
 export * from "./map/testMap";
 export * from "./map/editableMap";
+export * from "./map/pixelBodySizes";
+export * from "./map/billiardsMap";
 export * from "./rules/outOfBounds";
 
 export * from "./simulation/hash";

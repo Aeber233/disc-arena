@@ -3,10 +3,12 @@ import type { GameState } from "../types/game";
 import type { MapData } from "../types/map";
 import type { BodyProxy } from "../types/portal";
 import type { SimulationEvent, SimulationOptions } from "../types/simulation";
+import { add, length, scale, sub } from "../math/vec2";
 import { terrainDampingMultiplierAtPoint } from "../map/editableMap";
 import { solveCollisions } from "./collisions/solveCollisions";
 import { commitPortalTransitions } from "./portals/commitPortalTransitions";
 import { buildBodyProxies } from "./proxies/buildBodyProxies";
+import { transformVector } from "./proxies/portalTransforms";
 import { applyContinuousEffects } from "./systems/continuousEffects";
 import { applyDamping } from "./systems/damping";
 import { integratePosition, integrateVelocity } from "./systems/integrate";
@@ -16,6 +18,11 @@ import { resolveTriggers } from "./triggers/resolveTriggers";
 
 export interface StepWorldResult {
   readonly events: readonly SimulationEvent[];
+}
+
+export interface ProxySnapshot {
+  readonly position: BodyProxy["position"];
+  readonly velocity: BodyProxy["velocity"];
 }
 
 /**
@@ -29,13 +36,14 @@ export function stepWorld(
 ): StepWorldResult {
   const events: SimulationEvent[] = [];
 
-  const proxies = buildBodyProxies(state.bodies, mapData);
+  const previousPositions = snapshotBodyPositions(state.bodies);
   events.push(...applyContinuousEffects(state, mapData, step));
   applySpinCurve(state.bodies, options.fixedDt);
   integrateVelocity(state.bodies, options.fixedDt);
   integratePosition(state.bodies, options.fixedDt);
 
-  syncPrimaryProxiesFromBodies(proxies, state.bodies);
+  const proxies = buildBodyProxies(state.bodies, mapData);
+  const proxySnapshots = snapshotProxies(proxies);
   const collisionResult = solveCollisions(
     proxies,
     state.bodies,
@@ -46,7 +54,7 @@ export function stepWorld(
   );
   events.push(...collisionResult.events);
 
-  mapProxyImpulsesBackToBodies(collisionResult.proxies, state.bodies);
+  mapProxyImpulsesBackToBodies(collisionResult.proxies, state.bodies, proxySnapshots);
   events.push(...resolveTriggers(state.bodies, mapData, options.fixedDt, step));
   applyDamping(
     state.bodies,
@@ -55,30 +63,64 @@ export function stepWorld(
     (body) => terrainDampingMultiplierAtPoint(mapData, body.position)
   );
   updateSleepState(state.bodies);
-  events.push(...commitPortalTransitions(state.bodies, mapData, step));
+  events.push(...commitPortalTransitions(state.bodies, mapData, step, previousPositions));
   events.push(...collectEvents(state.bodies, step));
 
   return { events };
 }
 
-function syncPrimaryProxiesFromBodies(
-  proxies: BodyProxy[],
-  bodies: readonly BodyState[]
+export function mapProxyImpulsesBackToBodies(
+  proxies: readonly BodyProxy[],
+  bodies: BodyState[],
+  proxySnapshots?: ReadonlyMap<string, ProxySnapshot>
 ): void {
-  for (const proxy of proxies) {
-    if (proxy.kind !== "primary") {
+  if (!proxySnapshots) {
+    mapPrimaryProxiesBackToBodies(proxies, bodies);
+    return;
+  }
+
+  for (const body of bodies) {
+    const bodyProxies = proxies.filter((proxy) => proxy.bodyId === body.id);
+    if (bodyProxies.length === 0) {
       continue;
     }
-    const body = bodies.find((candidate) => candidate.id === proxy.bodyId);
-    if (!body) {
-      continue;
+
+    let velocityDelta = { x: 0, y: 0 };
+    let positionDelta = { x: 0, y: 0 };
+    let positionDeltaCount = 0;
+
+    for (const proxy of bodyProxies) {
+      const baseline = proxySnapshots.get(proxy.proxyId);
+      if (!baseline) {
+        continue;
+      }
+
+      const proxyPositionDelta = sub(proxy.position, baseline.position);
+      const proxyVelocityDelta = sub(proxy.velocity, baseline.velocity);
+      const bodyPositionDelta =
+        proxy.kind === "portal_shadow"
+          ? transformVector(proxyPositionDelta, proxy.transformToBody)
+          : proxyPositionDelta;
+      const bodyVelocityDelta =
+        proxy.kind === "portal_shadow"
+          ? transformVector(proxyVelocityDelta, proxy.transformToBody)
+          : proxyVelocityDelta;
+
+      if (length(bodyPositionDelta) > 0) {
+        positionDelta = add(positionDelta, bodyPositionDelta);
+        positionDeltaCount += 1;
+      }
+      velocityDelta = add(velocityDelta, bodyVelocityDelta);
     }
-    proxy.position = { ...body.position };
-    proxy.velocity = { ...body.velocity };
+
+    if (positionDeltaCount > 0) {
+      body.position = add(body.position, scale(positionDelta, 1 / positionDeltaCount));
+    }
+    body.velocity = add(body.velocity, velocityDelta);
   }
 }
 
-export function mapProxyImpulsesBackToBodies(
+function mapPrimaryProxiesBackToBodies(
   proxies: readonly BodyProxy[],
   bodies: BodyState[]
 ): void {
@@ -93,6 +135,27 @@ export function mapProxyImpulsesBackToBodies(
     body.position = { ...proxy.position };
     body.velocity = { ...proxy.velocity };
   }
+}
+
+function snapshotBodyPositions(
+  bodies: readonly BodyState[]
+): ReadonlyMap<string, BodyState["position"]> {
+  const positions = new Map<string, BodyState["position"]>();
+  for (const body of bodies) {
+    positions.set(body.id, { ...body.position });
+  }
+  return positions;
+}
+
+function snapshotProxies(proxies: readonly BodyProxy[]): ReadonlyMap<string, ProxySnapshot> {
+  const snapshots = new Map<string, ProxySnapshot>();
+  for (const proxy of proxies) {
+    snapshots.set(proxy.proxyId, {
+      position: { ...proxy.position },
+      velocity: { ...proxy.velocity }
+    });
+  }
+  return snapshots;
 }
 
 function collectEvents(

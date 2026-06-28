@@ -10,13 +10,18 @@ import {
   applyEditableMapBrush,
   createDefaultEditableMapDocument,
   decodeEditableMapDocument,
+  EDITABLE_MAP_ENCODED_PREFIX,
+  EDITABLE_MAP_LEGACY_ENCODED_PREFIX,
+  EDITABLE_PORTAL_MIN_LENGTH_CELLS,
   encodeEditableMapDocument,
   EDITOR_MAP_CELL_SIZE,
   EDITOR_MAP_MAX_WIDTH_CELLS,
   editableMapToMapData,
   parseEditableMapDocument,
   resizeEditableMapDocument,
+  setEditablePortalPair,
   terrainDampingMultiplierAtPoint,
+  toggleEditablePortalPair,
   validateEditableMapDocument
 } from "./editableMap";
 
@@ -73,8 +78,8 @@ describe("editable map", () => {
     expect(resized.obstacleLayer).toHaveLength(128 * 128);
   });
 
-  it("encodes maps as a long string and decodes them without JSON", () => {
-    const document = applyEditableMapBrush(createDefaultEditableMapDocument(), {
+  it("encodes DAEM2 maps as a long string and decodes portals without JSON", () => {
+    const painted = applyEditableMapBrush(createDefaultEditableMapDocument(), {
       layer: "obstacle",
       tool: "add",
       brushSize: 1,
@@ -83,14 +88,127 @@ describe("editable map", () => {
       groundMaterial: "grass",
       obstacleMaterial: "wood"
     });
+    const document = toggleEditablePortalPair(painted, "portal1");
 
     const encoded = encodeEditableMapDocument(document);
     const decoded = decodeEditableMapDocument(encoded);
 
-    expect(encoded.startsWith("DAEM1|")).toBe(true);
+    expect(encoded.startsWith(`${EDITABLE_MAP_ENCODED_PREFIX}|`)).toBe(true);
     expect(encoded).not.toContain("{");
     expect(encoded).not.toContain("[");
     expect(decoded).toEqual(document);
+  });
+
+  it("imports legacy DAEM1 strings with an empty portal layer", () => {
+    const encoded = encodeEditableMapDocument(createDefaultEditableMapDocument());
+    const parts = encoded.split("|");
+    const legacy = [
+      EDITABLE_MAP_LEGACY_ENCODED_PREFIX,
+      ...parts.slice(1, 8)
+    ].join("|");
+
+    const decoded = decodeEditableMapDocument(legacy);
+
+    expect(decoded.portalLayer).toEqual([]);
+    expect(encodeEditableMapDocument(decoded).startsWith(`${EDITABLE_MAP_ENCODED_PREFIX}|`)).toBe(
+      true
+    );
+  });
+
+  it("rejects invalid portal ids, duplicates, lengths, centers, and angles", () => {
+    const valid = toggleEditablePortalPair(createDefaultEditableMapDocument(), "portal1");
+    const portal = valid.portalLayer[0]!;
+    const invalidFields = {
+      ...valid,
+      portalLayer: [
+        portal,
+        {
+          ...portal,
+          lengthCells: EDITABLE_PORTAL_MIN_LENGTH_CELLS - 1,
+          a: {
+            center: { x: -1, y: 1 },
+            angle: Number.POSITIVE_INFINITY
+          }
+        }
+      ]
+    };
+    const invalidId = {
+      ...valid,
+      portalLayer: [{ ...portal, id: "portal3" }]
+    };
+    const tooMany = {
+      ...valid,
+      portalLayer: [portal, { ...portal, id: "portal2" }, portal]
+    };
+
+    const fieldsResult = validateEditableMapDocument(invalidFields);
+    const idResult = validateEditableMapDocument(invalidId);
+    const tooManyResult = validateEditableMapDocument(tooMany);
+
+    expect(fieldsResult.ok).toBe(false);
+    expect(fieldsResult.errors.join(" ")).toContain("portalLayer");
+    expect(fieldsResult.errors.join(" ")).toContain("duplicated");
+    expect(fieldsResult.errors.join(" ")).toContain("lengthCells");
+    expect(fieldsResult.errors.join(" ")).toContain("center.x");
+    expect(fieldsResult.errors.join(" ")).toContain("angle");
+    expect(idResult.ok).toBe(false);
+    expect(idResult.errors.join(" ")).toContain("id");
+    expect(tooManyResult.ok).toBe(false);
+    expect(tooManyResult.errors.join(" ")).toContain("at most two");
+  });
+
+  it("toggles portal pairs on and off", () => {
+    const empty = createDefaultEditableMapDocument();
+    const added = toggleEditablePortalPair(empty, "portal2");
+    const removed = toggleEditablePortalPair(added, "portal2");
+
+    expect(added.portalLayer).toHaveLength(1);
+    expect(added.portalLayer[0]?.id).toBe("portal2");
+    expect(removed.portalLayer).toHaveLength(0);
+  });
+
+  it("clamps portals when resizing maps", () => {
+    const document = toggleEditablePortalPair(createDefaultEditableMapDocument(), "portal1");
+    const resized = resizeEditableMapDocument(document, 4, 4);
+    const portal = resized.portalLayer[0]!;
+
+    expect(portal.lengthCells).toBeGreaterThanOrEqual(EDITABLE_PORTAL_MIN_LENGTH_CELLS);
+    expect(portal.lengthCells).toBeLessThanOrEqual(4);
+    for (const endpoint of [portal.a, portal.b]) {
+      expect(endpoint.center.x).toBeGreaterThanOrEqual(0);
+      expect(endpoint.center.x).toBeLessThanOrEqual(4);
+      expect(endpoint.center.y).toBeGreaterThanOrEqual(0);
+      expect(endpoint.center.y).toBeLessThanOrEqual(4);
+    }
+  });
+
+  it("converts editable portal pairs to MapData portals", () => {
+    const document = setEditablePortalPair(createDefaultEditableMapDocument(), {
+      id: "portal1",
+      lengthCells: 3,
+      a: {
+        center: { x: 10, y: 12 },
+        angle: 0
+      },
+      b: {
+        center: { x: 20, y: 14 },
+        angle: Math.PI / 2
+      }
+    });
+
+    const mapData = editableMapToMapData(document);
+
+    expect(mapData.portals).toHaveLength(1);
+    expect(mapData.portals[0]?.id).toBe("portal1");
+    expect(mapData.portals[0]?.a.width).toBe(3 * EDITOR_MAP_CELL_SIZE);
+    expect(mapData.portals[0]?.a.position).toEqual({
+      x: 10 * EDITOR_MAP_CELL_SIZE,
+      y: 12 * EDITOR_MAP_CELL_SIZE
+    });
+    expect(mapData.portals[0]?.a.normal.x).toBeCloseTo(0);
+    expect(mapData.portals[0]?.a.normal.y).toBeCloseTo(1);
+    expect(mapData.portals[0]?.b.normal.x).toBeCloseTo(-1);
+    expect(mapData.portals[0]?.b.normal.y).toBeCloseTo(0);
   });
 
   it("add overwrites triangular ground cells with full cells", () => {
@@ -138,7 +256,7 @@ describe("editable map", () => {
     expect(shapes).toEqual([1, 2, 3, 4, 0]);
   });
 
-  it("converts full and triangular wood cells to static wall colliders", () => {
+  it("converts full and triangular wood cells to obstacle geometry and boundary colliders", () => {
     let document = createDefaultEditableMapDocument();
     const baselineWallCount = editableMapToMapData(document).colliders.length;
     document = applyEditableMapBrush(document, {
@@ -170,9 +288,27 @@ describe("editable map", () => {
     });
 
     const mapData = editableMapToMapData(document);
+    const fullWoodIndex = 10 + 10 * document.widthCells;
+    const triangleWoodIndex = 12 + 10 * document.widthCells;
 
+    expect(mapData.obstacles?.widthCells).toBe(document.widthCells);
+    expect(mapData.obstacles?.heightCells).toBe(document.heightCells);
+    expect(mapData.obstacles?.cells[fullWoodIndex]).toEqual({
+      material: "wood",
+      shape: 0
+    });
+    expect(mapData.obstacles?.cells[triangleWoodIndex]).toEqual({
+      material: "wood",
+      shape: 1
+    });
     expect(mapData.colliders.every((collider) => collider.type === "static_wall")).toBe(true);
     expect(mapData.colliders.length).toBe(baselineWallCount + 7);
+    for (const collider of mapData.colliders) {
+      expect(collider.solidSideNormal).toBeDefined();
+      expect(
+        Math.hypot(collider.solidSideNormal?.x ?? 0, collider.solidSideNormal?.y ?? 0)
+      ).toBeCloseTo(1);
+    }
   });
 
   it("uses ground material to reduce or increase damping", () => {

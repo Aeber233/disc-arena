@@ -10,6 +10,7 @@ export interface MapData {
   readonly name?: string;
   readonly tableBounds?: TableBounds;
   readonly terrain?: MapTerrainData;
+  readonly obstacles?: MapObstacleData;
   readonly colliders: readonly MapCollider[];
   readonly triggers: readonly MapTrigger[];
   readonly portals: readonly PortalPair[];
@@ -39,6 +40,19 @@ export interface MapTerrainCell {
   readonly shape: MapCellShape;
 }
 
+export interface MapObstacleData {
+  readonly origin: Vec2;
+  readonly widthCells: number;
+  readonly heightCells: number;
+  readonly cellSize: number;
+  readonly cells: readonly (MapObstacleCell | null)[];
+}
+
+export interface MapObstacleCell {
+  readonly material: ObstacleMaterial;
+  readonly shape: MapCellShape;
+}
+
 export type MapCollider =
   | StaticWallCollider
   | BumperCollider
@@ -52,6 +66,12 @@ export interface StaticWallCollider {
   readonly start: Vec2;
   readonly end: Vec2;
   readonly restitution?: number;
+  /**
+   * Optional unit normal pointing from the collision edge into the solid
+   * obstacle side. Renderers can use this to draw visual wall thickness without
+   * moving the physical collision line.
+   */
+  readonly solidSideNormal?: Vec2;
 }
 
 export interface BumperCollider {

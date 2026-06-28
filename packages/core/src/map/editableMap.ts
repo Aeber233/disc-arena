@@ -4,22 +4,29 @@ import type {
   GroundMaterial,
   MapCellShape,
   MapData,
+  MapObstacleData,
   MapTerrainData,
   ObstacleMaterial,
   StaticWallCollider
 } from "../types/map";
 
-export const EDITABLE_MAP_VERSION = 1;
+export const EDITABLE_MAP_VERSION = 2;
+export const EDITABLE_MAP_LEGACY_VERSION = 1;
 export const EDITOR_MAP_DEFAULT_WIDTH_CELLS = 48;
 export const EDITOR_MAP_DEFAULT_HEIGHT_CELLS = 28;
 export const EDITOR_MAP_MAX_WIDTH_CELLS = 128;
 export const EDITOR_MAP_MAX_HEIGHT_CELLS = 128;
 export const EDITOR_MAP_CELL_SIZE = 40 * PHYSICS_UNIT_SCALE;
-export const EDITABLE_MAP_ENCODED_PREFIX = "DAEM1";
+export const EDITABLE_MAP_ENCODED_PREFIX = "DAEM2";
+export const EDITABLE_MAP_LEGACY_ENCODED_PREFIX = "DAEM1";
+export const EDITABLE_PORTAL_MIN_LENGTH_CELLS = 3;
+export const EDITABLE_PORTAL_WIDTH_CELLS = 1;
 
 export type EditableLayer = "ground" | "obstacle";
 export type EditableTool = "add" | "remove" | "shape";
 export type EditableBrushSize = 1 | 2 | 4;
+export type EditablePortalPairId = "portal1" | "portal2";
+export type EditablePortalEndpointId = "a" | "b";
 
 export interface EditableMapDocument {
   readonly version: typeof EDITABLE_MAP_VERSION;
@@ -29,6 +36,7 @@ export interface EditableMapDocument {
   readonly heightCells: number;
   readonly cellSize: number;
   readonly groundLayer: readonly EditableGroundCell[];
+  readonly portalLayer: readonly EditablePortalPair[];
   readonly obstacleLayer: readonly (EditableObstacleCell | null)[];
 }
 
@@ -40,6 +48,18 @@ export interface EditableGroundCell {
 export interface EditableObstacleCell {
   readonly material: ObstacleMaterial;
   readonly shape: MapCellShape;
+}
+
+export interface EditablePortalEndpoint {
+  readonly center: Vec2;
+  readonly angle: number;
+}
+
+export interface EditablePortalPair {
+  readonly id: EditablePortalPairId;
+  readonly lengthCells: number;
+  readonly a: EditablePortalEndpoint;
+  readonly b: EditablePortalEndpoint;
 }
 
 export interface EditableBrushIntent {
@@ -66,6 +86,7 @@ export const GROUND_DAMPING_MULTIPLIERS: Record<GroundMaterial, number> = {
 
 const GROUND_MATERIALS = new Set<GroundMaterial>(["void", "grass", "ice", "sand"]);
 const OBSTACLE_MATERIALS = new Set<ObstacleMaterial>(["wood"]);
+const PORTAL_PAIR_IDS = new Set<EditablePortalPairId>(["portal1", "portal2"]);
 const CELL_SHAPES = new Set<MapCellShape>([0, 1, 2, 3, 4]);
 const GROUND_TO_CODE: Record<GroundMaterial, string> = {
   void: "0",
@@ -113,6 +134,7 @@ export function createDefaultEditableMapDocument(): EditableMapDocument {
     heightCells,
     cellSize: EDITOR_MAP_CELL_SIZE,
     groundLayer,
+    portalLayer: [],
     obstacleLayer
   };
 }
@@ -147,6 +169,9 @@ export function resizeEditableMapDocument(
     widthCells: nextWidth,
     heightCells: nextHeight,
     groundLayer,
+    portalLayer: document.portalLayer.map((pair) =>
+      clampEditablePortalPair(pair, nextWidth, nextHeight)
+    ),
     obstacleLayer
   };
 }
@@ -157,6 +182,7 @@ export function cloneEditableMapDocument(
   return {
     ...document,
     groundLayer: document.groundLayer.map((cell) => ({ ...cell })),
+    portalLayer: document.portalLayer.map(cloneEditablePortalPair),
     obstacleLayer: document.obstacleLayer.map((cell) => (cell ? { ...cell } : null))
   };
 }
@@ -225,6 +251,26 @@ export function validateEditableMapDocument(
     });
   }
 
+  if (!Array.isArray(value.portalLayer) || value.portalLayer.length > 2) {
+    errors.push("portalLayer must contain at most two portal pairs");
+  } else {
+    const ids = new Set<string>();
+    value.portalLayer.forEach((pair, index) => {
+      const pairErrors = validateEditablePortalPair(
+        pair,
+        value.widthCells,
+        value.heightCells
+      );
+      if (isRecord(pair) && typeof pair.id === "string") {
+        if (ids.has(pair.id)) {
+          pairErrors.push(`portalLayer[${index}].id is duplicated`);
+        }
+        ids.add(pair.id);
+      }
+      errors.push(...pairErrors.map((error) => `portalLayer[${index}]: ${error}`));
+    });
+  }
+
   return { ok: errors.length === 0, errors };
 }
 
@@ -248,13 +294,18 @@ export function encodeEditableMapDocument(document: EditableMapDocument): string
     toBase36(validated.heightCells),
     toBase36(validated.cellSize),
     encodeRle(validated.groundLayer.map(encodeGroundCell)),
-    encodeRle(validated.obstacleLayer.map(encodeObstacleCell))
+    encodeRle(validated.obstacleLayer.map(encodeObstacleCell)),
+    encodePortalLayer(validated.portalLayer)
   ].join("|");
 }
 
 export function decodeEditableMapDocument(encoded: string): EditableMapDocument {
   const parts = encoded.trim().split("|");
-  if (parts.length !== 8 || parts[0] !== EDITABLE_MAP_ENCODED_PREFIX) {
+  if (parts[0] === EDITABLE_MAP_LEGACY_ENCODED_PREFIX) {
+    return decodeLegacyEditableMapDocument(parts);
+  }
+
+  if (parts.length !== 9 || parts[0] !== EDITABLE_MAP_ENCODED_PREFIX) {
     throw new Error("Invalid encoded map string");
   }
 
@@ -272,6 +323,33 @@ export function decodeEditableMapDocument(encoded: string): EditableMapDocument 
     heightCells,
     cellSize,
     groundLayer: groundTokens.map(decodeGroundCell),
+    portalLayer: decodePortalLayer(parts[8] ?? ""),
+    obstacleLayer: obstacleTokens.map(decodeObstacleCell)
+  };
+
+  return parseEditableMapDocument(document);
+}
+
+function decodeLegacyEditableMapDocument(parts: readonly string[]): EditableMapDocument {
+  if (parts.length !== 8) {
+    throw new Error("Invalid legacy encoded map string");
+  }
+
+  const widthCells = fromBase36(parts[3] ?? "");
+  const heightCells = fromBase36(parts[4] ?? "");
+  const cellSize = fromBase36(parts[5] ?? "");
+  const expectedLength = widthCells * heightCells;
+  const groundTokens = decodeRle(parts[6] ?? "", expectedLength);
+  const obstacleTokens = decodeRle(parts[7] ?? "", expectedLength);
+  const document: EditableMapDocument = {
+    version: EDITABLE_MAP_VERSION,
+    id: decodeText(parts[1] ?? ""),
+    name: decodeText(parts[2] ?? ""),
+    widthCells,
+    heightCells,
+    cellSize,
+    groundLayer: groundTokens.map(decodeGroundCell),
+    portalLayer: [],
     obstacleLayer: obstacleTokens.map(decodeObstacleCell)
   };
 
@@ -305,9 +383,43 @@ export function editableMapToMapData(document: EditableMapDocument): MapData {
     name: document.name,
     tableBounds: { left: 0, top: 0, right, bottom },
     terrain: editableGroundToTerrain(document),
+    obstacles: editableObstaclesToObstacleData(document),
     colliders,
     triggers: [],
-    portals: []
+    portals: document.portalLayer.map((pair) => editablePortalPairToPortalPair(pair, document))
+  };
+}
+
+export function toggleEditablePortalPair(
+  document: EditableMapDocument,
+  portalPairId: EditablePortalPairId
+): EditableMapDocument {
+  const existing = document.portalLayer.some((pair) => pair.id === portalPairId);
+  if (existing) {
+    return {
+      ...cloneEditableMapDocument(document),
+      portalLayer: document.portalLayer.filter((pair) => pair.id !== portalPairId)
+    };
+  }
+
+  return setEditablePortalPair(
+    document,
+    createDefaultEditablePortalPair(portalPairId, document.widthCells, document.heightCells)
+  );
+}
+
+export function setEditablePortalPair(
+  document: EditableMapDocument,
+  pair: EditablePortalPair
+): EditableMapDocument {
+  const next = cloneEditableMapDocument(document);
+  const clamped = clampEditablePortalPair(pair, next.widthCells, next.heightCells);
+  const withoutPair = next.portalLayer.filter((candidate) => candidate.id !== pair.id);
+  return {
+    ...next,
+    portalLayer: [...withoutPair, clamped].sort(
+      (a, b) => portalPairSortIndex(a.id) - portalPairSortIndex(b.id)
+    )
   };
 }
 
@@ -320,6 +432,79 @@ export function editableGroundToTerrain(
     heightCells: document.heightCells,
     cellSize: document.cellSize,
     cells: document.groundLayer.map((cell) => ({ ...cell }))
+  };
+}
+
+export function editableObstaclesToObstacleData(
+  document: EditableMapDocument
+): MapObstacleData {
+  return {
+    origin: { x: 0, y: 0 },
+    widthCells: document.widthCells,
+    heightCells: document.heightCells,
+    cellSize: document.cellSize,
+    cells: document.obstacleLayer.map((cell) => (cell ? { ...cell } : null))
+  };
+}
+
+export function createDefaultEditablePortalPair(
+  portalPairId: EditablePortalPairId,
+  widthCells: number,
+  heightCells: number
+): EditablePortalPair {
+  const lengthCells = clampPortalLength(5, widthCells, heightCells);
+  const centerX = widthCells / 2;
+  const centerY = heightCells / 2;
+  const horizontalOffset = Math.max(3, Math.min(8, widthCells * 0.18));
+  const verticalOffset = Math.max(2, Math.min(6, heightCells * 0.16));
+
+  if (portalPairId === "portal2") {
+    return clampEditablePortalPair(
+      {
+        id: "portal2",
+        lengthCells,
+        a: {
+          center: { x: centerX - horizontalOffset * 0.6, y: centerY - verticalOffset },
+          angle: 0
+        },
+        b: {
+          center: { x: centerX + horizontalOffset * 0.6, y: centerY + verticalOffset },
+          angle: Math.PI / 2
+        }
+      },
+      widthCells,
+      heightCells
+    );
+  }
+
+  return clampEditablePortalPair(
+    {
+      id: "portal1",
+      lengthCells,
+      a: {
+        center: { x: centerX - horizontalOffset, y: centerY },
+        angle: Math.PI / 2
+      },
+      b: {
+        center: { x: centerX + horizontalOffset, y: centerY },
+        angle: 0
+      }
+    },
+    widthCells,
+    heightCells
+  );
+}
+
+export function clampEditablePortalPair(
+  pair: EditablePortalPair,
+  widthCells: number,
+  heightCells: number
+): EditablePortalPair {
+  return {
+    id: pair.id,
+    lengthCells: clampPortalLength(pair.lengthCells, widthCells, heightCells),
+    a: clampEditablePortalEndpoint(pair.a, widthCells, heightCells),
+    b: clampEditablePortalEndpoint(pair.b, widthCells, heightCells)
   };
 }
 
@@ -409,7 +594,15 @@ function applyBrushToCell(
 function woodCellsToWallColliders(
   document: EditableMapDocument
 ): StaticWallCollider[] {
-  const edgeCounts = new Map<string, { readonly start: Vec2; readonly end: Vec2; count: number }>();
+  const edgeCounts = new Map<
+    string,
+    {
+      readonly start: Vec2;
+      readonly end: Vec2;
+      readonly solidSideNormal: Vec2;
+      count: number;
+    }
+  >();
 
   document.obstacleLayer.forEach((cell, index) => {
     if (!cell || cell.material !== "wood") {
@@ -424,7 +617,7 @@ function woodCellsToWallColliders(
       if (existing) {
         existing.count += 1;
       } else {
-        edgeCounts.set(key, { ...edge, count: 1 });
+        edgeCounts.set(key, { ...edge, solidSideNormal: edgeSolidSideNormal(edge), count: 1 });
       }
     }
   });
@@ -436,8 +629,45 @@ function woodCellsToWallColliders(
       id: `wood-wall-${index}`,
       start: edge.start,
       end: edge.end,
+      solidSideNormal: edge.solidSideNormal,
       restitution: 1
     }));
+}
+
+function editablePortalPairToPortalPair(
+  pair: EditablePortalPair,
+  document: EditableMapDocument
+) {
+  return {
+    id: pair.id,
+    a: editablePortalEndpointToPortal(`${pair.id}-a`, pair.a, pair, document),
+    b: editablePortalEndpointToPortal(`${pair.id}-b`, pair.b, pair, document),
+    enabled: true
+  };
+}
+
+function editablePortalEndpointToPortal(
+  id: string,
+  endpoint: EditablePortalEndpoint,
+  pair: EditablePortalPair,
+  document: EditableMapDocument
+) {
+  return {
+    id,
+    position: {
+      x: endpoint.center.x * document.cellSize,
+      y: endpoint.center.y * document.cellSize
+    },
+    normal: portalNormalFromAngle(endpoint.angle),
+    width: pair.lengthCells * document.cellSize
+  };
+}
+
+function portalNormalFromAngle(angle: number): Vec2 {
+  return {
+    x: -Math.sin(angle),
+    y: Math.cos(angle)
+  };
 }
 
 function obstacleEdgesForCell(
@@ -476,6 +706,16 @@ function edges(points: readonly Vec2[]) {
     start: point,
     end: points[(index + 1) % points.length] ?? point
   }));
+}
+
+function edgeSolidSideNormal(edge: { readonly start: Vec2; readonly end: Vec2 }): Vec2 {
+  const dx = edge.end.x - edge.start.x;
+  const dy = edge.end.y - edge.start.y;
+  const normal = { x: -dy, y: dx };
+  const normalLength = Math.hypot(normal.x, normal.y);
+  return normalLength === 0
+    ? { x: 0, y: 1 }
+    : { x: normal.x / normalLength, y: normal.y / normalLength };
 }
 
 function normalizedEdgeKey(start: Vec2, end: Vec2): string {
@@ -555,6 +795,73 @@ function clampDimension(value: number, max: number): number {
   return Math.max(1, Math.min(max, Math.floor(value)));
 }
 
+function cloneEditablePortalPair(pair: EditablePortalPair): EditablePortalPair {
+  return {
+    id: pair.id,
+    lengthCells: pair.lengthCells,
+    a: {
+      center: { ...pair.a.center },
+      angle: pair.a.angle
+    },
+    b: {
+      center: { ...pair.b.center },
+      angle: pair.b.angle
+    }
+  };
+}
+
+function clampEditablePortalEndpoint(
+  endpoint: EditablePortalEndpoint,
+  widthCells: number,
+  heightCells: number
+): EditablePortalEndpoint {
+  return {
+    center: {
+      x: clampNumber(endpoint.center.x, 0, widthCells),
+      y: clampNumber(endpoint.center.y, 0, heightCells)
+    },
+    angle: normalizeAngle(endpoint.angle)
+  };
+}
+
+function clampPortalLength(
+  lengthCells: number,
+  widthCells: number,
+  heightCells: number
+): number {
+  const maxLength = Math.max(
+    EDITABLE_PORTAL_MIN_LENGTH_CELLS,
+    Math.max(widthCells, heightCells)
+  );
+  return clampNumber(
+    Math.round(lengthCells),
+    EDITABLE_PORTAL_MIN_LENGTH_CELLS,
+    maxLength
+  );
+}
+
+function portalPairSortIndex(portalPairId: EditablePortalPairId): number {
+  return portalPairId === "portal1" ? 0 : 1;
+}
+
+function normalizeAngle(angle: number): number {
+  if (!Number.isFinite(angle)) {
+    return 0;
+  }
+  let normalized = angle;
+  while (normalized <= -Math.PI) {
+    normalized += Math.PI * 2;
+  }
+  while (normalized > Math.PI) {
+    normalized -= Math.PI * 2;
+  }
+  return normalized;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
 function encodeGroundCell(cell: EditableGroundCell): string {
   return `${GROUND_TO_CODE[cell.material]}${cell.shape}`;
 }
@@ -580,6 +887,85 @@ function decodeObstacleCell(token: string): EditableObstacleCell | null {
     throw new Error(`Invalid obstacle token: ${token}`);
   }
   return { material: "wood", shape: decodeShape(token[1] ?? "") };
+}
+
+function encodePortalLayer(portalLayer: readonly EditablePortalPair[]): string {
+  if (portalLayer.length === 0) {
+    return "-";
+  }
+  return portalLayer.map(encodePortalPair).join(",");
+}
+
+function decodePortalLayer(encoded: string): EditablePortalPair[] {
+  if (encoded === "" || encoded === "-") {
+    return [];
+  }
+  return encoded.split(",").map(decodePortalPair);
+}
+
+function encodePortalPair(pair: EditablePortalPair): string {
+  return [
+    encodePortalPairId(pair.id),
+    encodeScaledNumber(pair.lengthCells),
+    encodeScaledNumber(pair.a.center.x),
+    encodeScaledNumber(pair.a.center.y),
+    encodeScaledNumber(pair.a.angle),
+    encodeScaledNumber(pair.b.center.x),
+    encodeScaledNumber(pair.b.center.y),
+    encodeScaledNumber(pair.b.angle)
+  ].join("~");
+}
+
+function decodePortalPair(encoded: string): EditablePortalPair {
+  const parts = encoded.split("~");
+  if (parts.length !== 8) {
+    throw new Error(`Invalid portal pair token: ${encoded}`);
+  }
+
+  return {
+    id: decodePortalPairId(parts[0] ?? ""),
+    lengthCells: decodeScaledNumber(parts[1] ?? ""),
+    a: {
+      center: {
+        x: decodeScaledNumber(parts[2] ?? ""),
+        y: decodeScaledNumber(parts[3] ?? "")
+      },
+      angle: decodeScaledNumber(parts[4] ?? "")
+    },
+    b: {
+      center: {
+        x: decodeScaledNumber(parts[5] ?? ""),
+        y: decodeScaledNumber(parts[6] ?? "")
+      },
+      angle: decodeScaledNumber(parts[7] ?? "")
+    }
+  };
+}
+
+function encodePortalPairId(portalPairId: EditablePortalPairId): string {
+  return portalPairId === "portal1" ? "1" : "2";
+}
+
+function decodePortalPairId(value: string): EditablePortalPairId {
+  if (value === "1") {
+    return "portal1";
+  }
+  if (value === "2") {
+    return "portal2";
+  }
+  throw new Error(`Invalid portal pair id: ${value}`);
+}
+
+function encodeScaledNumber(value: number): string {
+  return encodeURIComponent(String(value));
+}
+
+function decodeScaledNumber(value: string): number {
+  const parsed = Number(decodeURIComponent(value));
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid portal number: ${value}`);
+  }
+  return parsed;
 }
 
 function decodeShape(value: string): MapCellShape {
@@ -668,6 +1054,75 @@ function isObstacleCell(value: unknown): value is EditableObstacleCell {
     OBSTACLE_MATERIALS.has(value.material as ObstacleMaterial) &&
     CELL_SHAPES.has(value.shape as MapCellShape)
   );
+}
+
+function validateEditablePortalPair(
+  value: unknown,
+  widthCells: unknown,
+  heightCells: unknown
+): string[] {
+  const errors: string[] = [];
+  if (!isRecord(value)) {
+    return ["pair must be an object"];
+  }
+
+  if (!PORTAL_PAIR_IDS.has(value.id as EditablePortalPairId)) {
+    errors.push("id must be portal1 or portal2");
+  }
+  if (
+    typeof value.lengthCells !== "number" ||
+    !Number.isInteger(value.lengthCells) ||
+    value.lengthCells < EDITABLE_PORTAL_MIN_LENGTH_CELLS
+  ) {
+    errors.push(`lengthCells must be at least ${EDITABLE_PORTAL_MIN_LENGTH_CELLS}`);
+  }
+
+  errors.push(
+    ...validateEditablePortalEndpoint(value.a, "a", widthCells, heightCells),
+    ...validateEditablePortalEndpoint(value.b, "b", widthCells, heightCells)
+  );
+  return errors;
+}
+
+function validateEditablePortalEndpoint(
+  value: unknown,
+  label: EditablePortalEndpointId,
+  widthCells: unknown,
+  heightCells: unknown
+): string[] {
+  const errors: string[] = [];
+  if (!isRecord(value)) {
+    return [`${label} must be an object`];
+  }
+
+  if (!isRecord(value.center)) {
+    errors.push(`${label}.center must be an object`);
+  } else {
+    if (
+      typeof value.center.x !== "number" ||
+      !Number.isFinite(value.center.x) ||
+      typeof widthCells !== "number" ||
+      value.center.x < 0 ||
+      value.center.x > widthCells
+    ) {
+      errors.push(`${label}.center.x is out of bounds`);
+    }
+    if (
+      typeof value.center.y !== "number" ||
+      !Number.isFinite(value.center.y) ||
+      typeof heightCells !== "number" ||
+      value.center.y < 0 ||
+      value.center.y > heightCells
+    ) {
+      errors.push(`${label}.center.y is out of bounds`);
+    }
+  }
+
+  if (typeof value.angle !== "number" || !Number.isFinite(value.angle)) {
+    errors.push(`${label}.angle must be finite`);
+  }
+
+  return errors;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

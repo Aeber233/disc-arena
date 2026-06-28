@@ -4,14 +4,21 @@ import {
   decodeEditableMapDocument,
   encodeEditableMapDocument,
   editableMapToMapData,
+  EDITABLE_PORTAL_MIN_LENGTH_CELLS,
+  EDITABLE_PORTAL_WIDTH_CELLS,
   EDITOR_MAP_MAX_HEIGHT_CELLS,
   EDITOR_MAP_MAX_WIDTH_CELLS,
-  resizeEditableMapDocument
+  resizeEditableMapDocument,
+  setEditablePortalPair,
+  toggleEditablePortalPair
 } from "@disc-arena/core";
 import type {
   EditableBrushSize,
   EditableLayer,
   EditableMapDocument,
+  EditablePortalEndpointId,
+  EditablePortalPair,
+  EditablePortalPairId,
   EditableTool,
   GroundMaterial,
   MapCellShape,
@@ -19,6 +26,7 @@ import type {
   ObstacleMaterial,
   Vec2
 } from "@disc-arena/core";
+import { materialEdgeColor } from "./colors";
 
 interface MapEditorElements {
   readonly panel: HTMLElement;
@@ -44,20 +52,57 @@ export interface MapEditorController {
   currentMapData(): MapData;
 }
 
-type PaintMode = "idle" | "paint" | "pan";
+type PaintMode =
+  | "idle"
+  | "paint"
+  | "pan"
+  | "portal_pending"
+  | "portal_move"
+  | "portal_resize"
+  | "portal_rotate";
 type EditorTool = EditableTool | "drag";
-type EditorTab = "tools" | "materials";
+type EditorMenu = "tools" | "materials" | "resize" | "special";
 type BrushMode = "1" | "2" | "4" | "rect" | "circle";
+type PortalHitPart = "body" | "head" | "tail";
 
 interface PendingRegion {
   readonly kind: "rect" | "circle";
   readonly startCell: Vec2;
 }
 
+interface GridEdge {
+  readonly start: Vec2;
+  readonly end: Vec2;
+}
+
+interface LayerBoundaryEdge extends GridEdge {
+  readonly color: string;
+}
+
+interface FilledLayerCell {
+  readonly shape: MapCellShape;
+  readonly color: string;
+}
+
+interface PortalHitTarget {
+  readonly pairId: EditablePortalPairId;
+  readonly endpointId: EditablePortalEndpointId;
+  readonly part: PortalHitPart;
+}
+
+interface PortalDragState {
+  readonly target: PortalHitTarget;
+  readonly startGrid: Vec2;
+  lastGrid: Vec2;
+  longPressTimer?: number;
+}
+
 const DRAFT_STORAGE_KEY = "disc-arena.editable-map.draft.v1";
 const baseCellPixels = 24;
-const minZoom = 0.35;
+const minZoom = 0.12;
 const maxZoom = 8;
+const portalLongPressMs = 320;
+const portalMoveThresholdCells = 0.18;
 
 const groundColors: Record<GroundMaterial, string> = {
   void: "#303238",
@@ -67,7 +112,28 @@ const groundColors: Record<GroundMaterial, string> = {
 };
 
 const obstacleColors: Record<ObstacleMaterial, string> = {
-  wood: "#b98545"
+  wood: "#8f3f2f"
+};
+
+const groundEdgeColors = materialColorMap(groundColors);
+const obstacleEdgeColors = materialColorMap(obstacleColors);
+
+const portalColors: Record<
+  EditablePortalPairId,
+  { readonly base: string; readonly highlight: string; readonly cap: string; readonly outline: string }
+> = {
+  portal1: {
+    base: "#1378d8",
+    highlight: "#8fc8ef",
+    cap: "#9298a3",
+    outline: "#07345f"
+  },
+  portal2: {
+    base: "#8b32dc",
+    highlight: "#c9a6e9",
+    cap: "#9298a3",
+    outline: "#3c1761"
+  }
 };
 
 export function createMapEditor(
@@ -76,7 +142,7 @@ export function createMapEditor(
   elements: MapEditorElements
 ): MapEditorController {
   let document = loadDraft() ?? createDefaultEditableMapDocument();
-  let activeTab: EditorTab = "tools";
+  let activeMenu: EditorMenu | undefined;
   let activeLayer: EditableLayer = "ground";
   let activeTool: EditorTool = "add";
   let activeBrushMode: BrushMode = "1";
@@ -87,10 +153,12 @@ export function createMapEditor(
   let lastPointer: Vec2 | undefined;
   let hoverCell: Vec2 | undefined;
   let pendingRegion: PendingRegion | undefined;
-  const tabButtons = queryButtons(elements.panel, "[data-editor-tab]");
-  const tabPanels = queryElements(elements.panel, "[data-editor-tab-panel]");
+  let portalDrag: PortalDragState | undefined;
+  const menuButtons = queryButtons(elements.panel, "[data-editor-menu]");
+  const menuPanels = queryElements(elements.panel, "[data-editor-menu-panel]");
   const toolButtons = queryButtons(elements.panel, "[data-editor-tool]");
   const brushButtons = queryButtons(elements.panel, "[data-editor-brush]");
+  const specialPortalButtons = queryButtons(elements.panel, "[data-editor-special-portal]");
   const groundMaterialButtons = queryButtons(
     elements.panel,
     "[data-editor-ground-material]"
@@ -103,9 +171,10 @@ export function createMapEditor(
   syncControlsFromState();
   updateStatus("Ready");
 
-  for (const button of tabButtons) {
+  for (const button of menuButtons) {
     button.addEventListener("click", () => {
-      activeTab = button.dataset.editorTab as EditorTab;
+      const nextMenu = button.dataset.editorMenu as EditorMenu;
+      activeMenu = activeMenu === nextMenu ? undefined : nextMenu;
       pendingRegion = undefined;
       syncControlsFromState();
     });
@@ -122,6 +191,17 @@ export function createMapEditor(
       activeBrushMode = button.dataset.editorBrush as BrushMode;
       pendingRegion = undefined;
       syncControlsFromState();
+    });
+  }
+  for (const button of specialPortalButtons) {
+    button.addEventListener("click", () => {
+      const portalPairId = button.dataset.editorSpecialPortal as EditablePortalPairId;
+      document = toggleEditablePortalPair(document, portalPairId);
+      pendingRegion = undefined;
+      clearPortalDrag();
+      syncControlsFromState();
+      const exists = document.portalLayer.some((pair) => pair.id === portalPairId);
+      updateStatus(`${portalPairId} ${exists ? "added" : "removed"}`);
     });
   }
   for (const button of groundMaterialButtons) {
@@ -180,11 +260,15 @@ export function createMapEditor(
     const width = canvas.clientWidth || window.innerWidth;
     const height = canvas.clientHeight || window.innerHeight;
     context.save();
+    context.imageSmoothingEnabled = false;
     context.fillStyle = "#24262b";
     context.fillRect(0, 0, width, height);
 
     drawLayer(width, height, "ground");
+    drawLayerInnerOutline("ground");
+    drawPortalLayer();
     drawLayer(width, height, "obstacle");
+    drawLayerInnerOutline("obstacle");
     drawGrid();
     drawBrushPreview();
     context.restore();
@@ -208,7 +292,14 @@ export function createMapEditor(
     }
 
     const cell = screenToCell(screenPoint);
+    const grid = screenToGrid(screenPoint);
     hoverCell = cell;
+    const portalHit = hitTestPortals(grid);
+    if (portalHit) {
+      startPortalEdit(portalHit, grid);
+      return;
+    }
+
     if (isRegionBrush(activeBrushMode)) {
       handleRegionClick(cell, activeBrushMode);
       return;
@@ -220,6 +311,7 @@ export function createMapEditor(
 
   function handlePointerMove(_event: PointerEvent, screenPoint: Vec2): void {
     hoverCell = screenToCell(screenPoint);
+    const grid = screenToGrid(screenPoint);
 
     if (mode === "pan" && lastPointer) {
       camera = {
@@ -231,17 +323,24 @@ export function createMapEditor(
       return;
     }
 
+    if (isPortalEditMode(mode)) {
+      updatePortalEdit(grid);
+      return;
+    }
+
     if (mode === "paint") {
       paintAt(hoverCell);
     }
   }
 
   function handlePointerUp(_event: PointerEvent): void {
+    clearPortalDrag();
     mode = "idle";
     lastPointer = undefined;
   }
 
   function handlePointerCancel(): void {
+    clearPortalDrag();
     mode = "idle";
     lastPointer = undefined;
   }
@@ -257,6 +356,126 @@ export function createMapEditor(
       x: screenPoint.x - before.x * afterCellSize,
       y: screenPoint.y - before.y * afterCellSize
     };
+  }
+
+  function startPortalEdit(target: PortalHitTarget, grid: Vec2): void {
+    pendingRegion = undefined;
+    clearPortalDrag();
+    portalDrag = {
+      target,
+      startGrid: grid,
+      lastGrid: grid
+    };
+
+    if (target.part === "body") {
+      mode = "portal_pending";
+      portalDrag.longPressTimer = window.setTimeout(() => {
+        if (mode === "portal_pending" && portalDrag?.target === target) {
+          mode = "portal_rotate";
+          updateStatus("Rotate portal");
+        }
+      }, portalLongPressMs);
+      updateStatus("Drag to move, hold to rotate");
+      return;
+    }
+
+    mode = "portal_resize";
+    updateStatus("Drag portal end to resize pair");
+  }
+
+  function updatePortalEdit(grid: Vec2): void {
+    if (!portalDrag) {
+      return;
+    }
+
+    if (mode === "portal_pending") {
+      if (gridDistance(grid, portalDrag.startGrid) < portalMoveThresholdCells) {
+        return;
+      }
+      clearPortalLongPressTimer();
+      mode = "portal_move";
+    }
+
+    if (mode === "portal_move") {
+      movePortalEndpoint(portalDrag.target, subGrid(grid, portalDrag.lastGrid));
+      portalDrag.lastGrid = grid;
+      return;
+    }
+
+    if (mode === "portal_resize") {
+      resizePortalPair(portalDrag.target, grid);
+      portalDrag.lastGrid = grid;
+      return;
+    }
+
+    if (mode === "portal_rotate") {
+      rotatePortalEndpoint(portalDrag.target, grid);
+      portalDrag.lastGrid = grid;
+    }
+  }
+
+  function movePortalEndpoint(target: PortalHitTarget, delta: Vec2): void {
+    updatePortalPair(target.pairId, (pair) => ({
+      ...pair,
+      [target.endpointId]: {
+        ...pair[target.endpointId],
+        center: {
+          x: pair[target.endpointId].center.x + delta.x,
+          y: pair[target.endpointId].center.y + delta.y
+        }
+      }
+    }));
+  }
+
+  function resizePortalPair(target: PortalHitTarget, grid: Vec2): void {
+    const pair = findPortalPair(target.pairId);
+    if (!pair) {
+      return;
+    }
+    const endpoint = pair[target.endpointId];
+    const tangent = tangentFromAngle(endpoint.angle);
+    const fromCenter = subGrid(grid, endpoint.center);
+    const projectedHalfLength = Math.abs(dotGrid(fromCenter, tangent));
+    const nextLength = Math.max(
+      EDITABLE_PORTAL_MIN_LENGTH_CELLS,
+      Math.round(projectedHalfLength * 2)
+    );
+    updatePortalPair(target.pairId, (current) => ({
+      ...current,
+      lengthCells: nextLength
+    }));
+  }
+
+  function rotatePortalEndpoint(target: PortalHitTarget, grid: Vec2): void {
+    const pair = findPortalPair(target.pairId);
+    if (!pair) {
+      return;
+    }
+    const endpoint = pair[target.endpointId];
+    const delta = subGrid(grid, endpoint.center);
+    if (gridDistance(delta, { x: 0, y: 0 }) < 0.001) {
+      return;
+    }
+    updatePortalPair(target.pairId, (current) => ({
+      ...current,
+      [target.endpointId]: {
+        ...current[target.endpointId],
+        angle: Math.atan2(delta.y, delta.x)
+      }
+    }));
+  }
+
+  function updatePortalPair(
+    portalPairId: EditablePortalPairId,
+    updater: (pair: EditablePortalPair) => EditablePortalPair
+  ): void {
+    const pair = findPortalPair(portalPairId);
+    if (!pair) {
+      return;
+    }
+    document = setEditablePortalPair(document, updater(pair));
+    syncControlsFromState();
+    updateStatus(`${portalPairId} edited`);
   }
 
   function paintAt(cell: Vec2): void {
@@ -324,6 +543,233 @@ export function createMapEditor(
         }
       }
     }
+  }
+
+  function drawLayerInnerOutline(layer: EditableLayer): void {
+    const edges = layerBoundaryEdges(layer);
+    if (edges.length === 0) {
+      return;
+    }
+
+    context.save();
+    context.beginPath();
+    addLayerClipPath(layer);
+    context.clip();
+    context.lineWidth = Math.max(2, Math.round(cellPixels() * 0.14));
+    context.lineJoin = "miter";
+    context.lineCap = "butt";
+
+    for (const edge of edges) {
+      const start = gridToScreen(edge.start);
+      const end = gridToScreen(edge.end);
+      context.strokeStyle = edge.color;
+      context.beginPath();
+      context.moveTo(start.x, start.y);
+      context.lineTo(end.x, end.y);
+      context.stroke();
+    }
+    context.restore();
+  }
+
+  function addLayerClipPath(layer: EditableLayer): void {
+    for (let y = 0; y < document.heightCells; y += 1) {
+      for (let x = 0; x < document.widthCells; x += 1) {
+        const cell = filledLayerCell(layer, x, y);
+        if (!cell) {
+          continue;
+        }
+        const screen = cellToScreen(x, y);
+        addCellShapePath(screen.x, screen.y, cellPixels(), cell.shape);
+        context.closePath();
+      }
+    }
+  }
+
+  function layerBoundaryEdges(layer: EditableLayer): readonly LayerBoundaryEdge[] {
+    const edgeCounts = new Map<
+      string,
+      { readonly edge: LayerBoundaryEdge; count: number }
+    >();
+
+    for (let y = 0; y < document.heightCells; y += 1) {
+      for (let x = 0; x < document.widthCells; x += 1) {
+        const cell = filledLayerCell(layer, x, y);
+        if (!cell) {
+          continue;
+        }
+        for (const edge of gridCellEdges(x, y, cell.shape)) {
+          const colorEdge = { ...edge, color: cell.color };
+          const key = `${cell.color}:${normalizedGridEdgeKey(edge)}`;
+          const existing = edgeCounts.get(key);
+          if (existing) {
+            existing.count += 1;
+          } else {
+            edgeCounts.set(key, { edge: colorEdge, count: 1 });
+          }
+        }
+      }
+    }
+
+    return [...edgeCounts.values()]
+      .filter((entry) => entry.count === 1)
+      .map((entry) => entry.edge);
+  }
+
+  function filledLayerShape(
+    layer: EditableLayer,
+    x: number,
+    y: number
+  ): MapCellShape | undefined {
+    return filledLayerCell(layer, x, y)?.shape;
+  }
+
+  function filledLayerCell(
+    layer: EditableLayer,
+    x: number,
+    y: number
+  ): FilledLayerCell | undefined {
+    const index = cellIndex(x, y);
+    if (layer === "ground") {
+      const cell = document.groundLayer[index];
+      return cell && cell.material !== "void"
+        ? { shape: cell.shape, color: groundEdgeColors[cell.material] }
+        : undefined;
+    }
+
+    const cell = document.obstacleLayer[index];
+    return cell ? { shape: cell.shape, color: obstacleEdgeColors[cell.material] } : undefined;
+  }
+
+  function drawPortalLayer(): void {
+    for (const pair of document.portalLayer) {
+      drawPortalEndpoint(pair, "a");
+      drawPortalEndpoint(pair, "b");
+    }
+  }
+
+  function drawPortalEndpoint(
+    pair: EditablePortalPair,
+    endpointId: EditablePortalEndpointId
+  ): void {
+    const endpoint = pair[endpointId];
+    const center = gridToScreen(endpoint.center);
+    const size = cellPixels();
+    const width = EDITABLE_PORTAL_WIDTH_CELLS * size;
+    const radius = width / 2;
+    const length = pair.lengthCells * size;
+    const halfLength = length / 2;
+    const colors = portalColors[pair.id];
+
+    context.save();
+    context.translate(center.x, center.y);
+    context.rotate(endpoint.angle);
+
+    context.fillStyle = colors.cap;
+    context.beginPath();
+    context.arc(-halfLength, 0, radius, 0, Math.PI * 2);
+    context.arc(halfLength, 0, radius, 0, Math.PI * 2);
+    context.fill();
+
+    context.fillStyle = colors.base;
+    context.fillRect(-halfLength, -radius, length, width);
+
+    context.fillStyle = colors.highlight;
+    context.fillRect(-halfLength, -radius * 0.34, length, radius * 0.68);
+
+    context.strokeStyle = colors.outline;
+    context.lineWidth = Math.max(1.5, size * 0.08);
+    context.beginPath();
+    context.moveTo(-halfLength, -radius);
+    context.lineTo(halfLength, -radius);
+    context.arc(halfLength, 0, radius, -Math.PI / 2, Math.PI / 2);
+    context.lineTo(-halfLength, radius);
+    context.arc(-halfLength, 0, radius, Math.PI / 2, -Math.PI / 2);
+    context.closePath();
+    context.stroke();
+
+    drawPortalDirectionArrow(size);
+    context.restore();
+  }
+
+  function drawPortalDirectionArrow(size: number): void {
+    const start = EDITABLE_PORTAL_WIDTH_CELLS * size * 0.65;
+    const end = EDITABLE_PORTAL_WIDTH_CELLS * size * 1.35;
+    const arrow = Math.max(5, size * 0.18);
+
+    context.save();
+    context.strokeStyle = "rgba(255,255,255,0.9)";
+    context.fillStyle = "rgba(255,255,255,0.9)";
+    context.lineWidth = Math.max(1.5, size * 0.07);
+    context.beginPath();
+    context.moveTo(0, start);
+    context.lineTo(0, end);
+    context.stroke();
+
+    context.beginPath();
+    context.moveTo(0, end + arrow);
+    context.lineTo(-arrow * 0.7, end - arrow * 0.25);
+    context.lineTo(arrow * 0.7, end - arrow * 0.25);
+    context.closePath();
+    context.fill();
+    context.restore();
+  }
+
+  function hitTestPortals(grid: Vec2): PortalHitTarget | undefined {
+    for (let pairIndex = document.portalLayer.length - 1; pairIndex >= 0; pairIndex -= 1) {
+      const pair = document.portalLayer[pairIndex];
+      if (!pair) {
+        continue;
+      }
+      const bHit = hitTestPortalEndpoint(pair, "b", grid);
+      if (bHit) {
+        return bHit;
+      }
+      const aHit = hitTestPortalEndpoint(pair, "a", grid);
+      if (aHit) {
+        return aHit;
+      }
+    }
+    return undefined;
+  }
+
+  function hitTestPortalEndpoint(
+    pair: EditablePortalPair,
+    endpointId: EditablePortalEndpointId,
+    grid: Vec2
+  ): PortalHitTarget | undefined {
+    const endpoint = pair[endpointId];
+    const local = portalLocalPoint(endpoint, grid);
+    const halfLength = pair.lengthCells / 2;
+    const radius = EDITABLE_PORTAL_WIDTH_CELLS / 2;
+    const headDistance = Math.hypot(local.x + halfLength, local.y);
+    const tailDistance = Math.hypot(local.x - halfLength, local.y);
+
+    if (headDistance <= radius + 0.14) {
+      return { pairId: pair.id, endpointId, part: "head" };
+    }
+    if (tailDistance <= radius + 0.14) {
+      return { pairId: pair.id, endpointId, part: "tail" };
+    }
+    if (
+      Math.abs(local.x) <= halfLength &&
+      Math.abs(local.y) <= radius + 0.08
+    ) {
+      return { pairId: pair.id, endpointId, part: "body" };
+    }
+    return undefined;
+  }
+
+  function portalLocalPoint(
+    endpoint: EditablePortalPair[EditablePortalEndpointId],
+    grid: Vec2
+  ): Vec2 {
+    const delta = subGrid(grid, endpoint.center);
+    const tangent = tangentFromAngle(endpoint.angle);
+    const normal = normalFromAngle(endpoint.angle);
+    return {
+      x: dotGrid(delta, tangent),
+      y: dotGrid(delta, normal)
+    };
   }
 
   function drawGrid(): void {
@@ -483,11 +929,18 @@ export function createMapEditor(
   }
 
   function syncControlsFromState(): void {
-    syncButtonGroup(tabButtons, (button) => button.dataset.editorTab === activeTab);
+    syncButtonGroup(menuButtons, (button) => button.dataset.editorMenu === activeMenu);
     syncButtonGroup(toolButtons, (button) => button.dataset.editorTool === activeTool);
     syncButtonGroup(
       brushButtons,
       (button) => button.dataset.editorBrush === activeBrushMode
+    );
+    syncButtonGroup(
+      specialPortalButtons,
+      (button) =>
+        document.portalLayer.some(
+          (pair) => pair.id === (button.dataset.editorSpecialPortal as EditablePortalPairId)
+        )
     );
     syncButtonGroup(
       groundMaterialButtons,
@@ -497,8 +950,8 @@ export function createMapEditor(
       obstacleMaterialButtons,
       (button) => button.dataset.editorObstacleMaterial === activeObstacleMaterial
     );
-    for (const panel of tabPanels) {
-      panel.hidden = panel.getAttribute("data-editor-tab-panel") !== activeTab;
+    for (const panel of menuPanels) {
+      panel.hidden = panel.getAttribute("data-editor-menu-panel") !== activeMenu;
     }
     elements.width.max = String(EDITOR_MAP_MAX_WIDTH_CELLS);
     elements.height.max = String(EDITOR_MAP_MAX_HEIGHT_CELLS);
@@ -514,8 +967,34 @@ export function createMapEditor(
     elements.status.textContent = text;
   }
 
+  function findPortalPair(
+    portalPairId: EditablePortalPairId
+  ): EditablePortalPair | undefined {
+    return document.portalLayer.find((pair) => pair.id === portalPairId);
+  }
+
+  function clearPortalDrag(): void {
+    clearPortalLongPressTimer();
+    portalDrag = undefined;
+  }
+
+  function clearPortalLongPressTimer(): void {
+    if (portalDrag?.longPressTimer !== undefined) {
+      window.clearTimeout(portalDrag.longPressTimer);
+      delete portalDrag.longPressTimer;
+    }
+  }
+
   function cellPixels(): number {
     return baseCellPixels * camera.zoom;
+  }
+
+  function gridToScreen(point: Vec2): Vec2 {
+    const size = cellPixels();
+    return {
+      x: camera.x + point.x * size,
+      y: camera.y + point.y * size
+    };
   }
 
   function cellToScreen(x: number, y: number): Vec2 {
@@ -607,6 +1086,44 @@ function isRegionBrush(brushMode: BrushMode): brushMode is "rect" | "circle" {
   return brushMode === "rect" || brushMode === "circle";
 }
 
+function isPortalEditMode(mode: PaintMode): boolean {
+  return (
+    mode === "portal_pending" ||
+    mode === "portal_move" ||
+    mode === "portal_resize" ||
+    mode === "portal_rotate"
+  );
+}
+
+function tangentFromAngle(angle: number): Vec2 {
+  return {
+    x: Math.cos(angle),
+    y: Math.sin(angle)
+  };
+}
+
+function normalFromAngle(angle: number): Vec2 {
+  return {
+    x: -Math.sin(angle),
+    y: Math.cos(angle)
+  };
+}
+
+function subGrid(a: Vec2, b: Vec2): Vec2 {
+  return {
+    x: a.x - b.x,
+    y: a.y - b.y
+  };
+}
+
+function dotGrid(a: Vec2, b: Vec2): number {
+  return a.x * b.x + a.y * b.y;
+}
+
+function gridDistance(a: Vec2, b: Vec2): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
 function numericBrushSize(brushMode: BrushMode): EditableBrushSize {
   if (brushMode === "2") {
     return 2;
@@ -619,6 +1136,50 @@ function numericBrushSize(brushMode: BrushMode): EditableBrushSize {
 
 function editableTool(tool: EditorTool = "add"): EditableTool {
   return tool === "drag" ? "add" : tool;
+}
+
+function gridCellEdges(x: number, y: number, shape: MapCellShape): readonly GridEdge[] {
+  const topLeft = { x, y };
+  const topRight = { x: x + 1, y };
+  const bottomRight = { x: x + 1, y: y + 1 };
+  const bottomLeft = { x, y: y + 1 };
+
+  if (shape === 1) {
+    return edgesFromPoints([topLeft, topRight, bottomLeft]);
+  }
+  if (shape === 2) {
+    return edgesFromPoints([topLeft, topRight, bottomRight]);
+  }
+  if (shape === 3) {
+    return edgesFromPoints([topRight, bottomRight, bottomLeft]);
+  }
+  if (shape === 4) {
+    return edgesFromPoints([topLeft, bottomRight, bottomLeft]);
+  }
+  return edgesFromPoints([topLeft, topRight, bottomRight, bottomLeft]);
+}
+
+function edgesFromPoints(points: readonly Vec2[]): readonly GridEdge[] {
+  return points.map((point, index) => ({
+    start: point,
+    end: points[(index + 1) % points.length] ?? point
+  }));
+}
+
+function normalizedGridEdgeKey(edge: GridEdge): string {
+  const a = `${edge.start.x},${edge.start.y}`;
+  const b = `${edge.end.x},${edge.end.y}`;
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
+}
+
+function materialColorMap<TMaterial extends string>(
+  colors: Record<TMaterial, string>
+): Record<TMaterial, string> {
+  const entries = Object.entries(colors).map(([material, color]) => [
+    material,
+    materialEdgeColor(color as string)
+  ]);
+  return Object.fromEntries(entries) as Record<TMaterial, string>;
 }
 
 function queryButtons(root: HTMLElement, selector: string): HTMLButtonElement[] {

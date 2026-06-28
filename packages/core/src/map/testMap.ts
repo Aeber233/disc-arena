@@ -2,6 +2,7 @@ import type { BodyState } from "../types/body";
 import type { GameState } from "../types/game";
 import type { MapData } from "../types/map";
 import { PHYSICS_UNIT_SCALE } from "../physics/units";
+import { pixelBodyRadius, type PixelBodyRadiusTierId } from "./pixelBodySizes";
 
 export const TEST_MAP_ID = "test_map";
 export const TEST_MAP_PHYSICS_SCALE = PHYSICS_UNIT_SCALE;
@@ -30,6 +31,7 @@ export const testMapData: MapData = {
       id: "left-wall",
       start: { x: TEST_MAP_WALL_INSET, y: 40 * S },
       end: { x: TEST_MAP_WALL_INSET, y: TEST_MAP_HEIGHT - 40 * S },
+      solidSideNormal: { x: -1, y: 0 },
       restitution: 0.92
     },
     {
@@ -37,11 +39,29 @@ export const testMapData: MapData = {
       id: "right-wall",
       start: { x: TEST_MAP_WIDTH - TEST_MAP_WALL_INSET, y: 40 * S },
       end: { x: TEST_MAP_WIDTH - TEST_MAP_WALL_INSET, y: TEST_MAP_HEIGHT - 40 * S },
+      solidSideNormal: { x: 1, y: 0 },
       restitution: 1.12
     }
   ],
   triggers: [],
-  portals: []
+  portals: [
+    {
+      id: "test-portal-pair-1",
+      a: {
+        id: "test-portal-a",
+        position: { x: 350 * S, y: 170 * S },
+        normal: { x: 1, y: 0 },
+        width: 130 * S
+      },
+      b: {
+        id: "test-portal-b",
+        position: { x: 690 * S, y: 410 * S },
+        normal: { x: 0, y: -1 },
+        width: 130 * S
+      },
+      enabled: true
+    }
+  ]
 };
 
 export function createTestMapGameState(): GameState {
@@ -53,11 +73,11 @@ export function createTestMapGameState(): GameState {
     phase: "waiting_for_shot",
     players: [{ id: "player", teamId: "white" }],
     bodies: [
-      createBall("ball-1", 1, 1, 18, 1.25, { x: 230, y: 280 }),
-      createBall("ball-2", 2, 1, 18, 1.2, { x: 455, y: 280 }),
-      createBall("ball-3", 3, 2.25, 26, 1, { x: 585, y: 280 }),
-      createBall("ball-4", 4, 0.8, 14, 1.5, { x: 700, y: 210 }),
-      createBall("ball-5", 5, 1.55, 22, 1.1, { x: 705, y: 350 })
+      createBall("ball-1", 1, 1, "18px", 1.25, { x: 230, y: 280 }),
+      createBall("ball-2", 2, 1, "18px", 1.2, { x: 455, y: 280 }),
+      createBall("ball-3", 3, 2.25, "26px", 1, { x: 585, y: 280 }),
+      createBall("ball-4", 4, 0.8, "14px", 1.5, { x: 700, y: 210 }),
+      createBall("ball-5", 5, 1.55, "22px", 1.1, { x: 705, y: 350 })
     ],
     effects: [],
     rngSeed: 20260627
@@ -68,7 +88,7 @@ function createBall(
   id: string,
   number: number,
   mass: number,
-  radius: number,
+  radiusTierId: PixelBodyRadiusTierId,
   damping: number,
   position: { x: number; y: number }
 ): BodyState {
@@ -79,7 +99,7 @@ function createBall(
     teamId: "white",
     position: scalePoint(position),
     velocity: { x: 0, y: 0 },
-    radius: radius * S,
+    radius: pixelBodyRadius(radiusTierId),
     mass: mass * S,
     damping,
     spin: 0,

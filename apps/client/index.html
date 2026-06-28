@@ -8,18 +8,29 @@
   </head>
   <body>
     <canvas id="game" aria-label="Disc Arena physics test"></canvas>
-    <div id="mode-bar">
-      <button id="mode-play" type="button">Play</button>
-      <button id="mode-editor" type="button">Editor</button>
+    <div id="main-menu">
+      <div class="menu-shell">
+        <h1>Disc Arena</h1>
+        <div class="menu-actions">
+          <button id="menu-play" type="button">Play</button>
+          <button id="menu-editor" type="button">Edit</button>
+        </div>
+      </div>
     </div>
-    <div id="hud" aria-live="polite"></div>
-    <button id="reset" type="button">Reset</button>
+    <div id="play-panel">
+      <button id="play-menu" type="button">Menu</button>
+      <div id="hud" aria-live="polite"></div>
+      <button id="reset" type="button">Reset</button>
+    </div>
     <div id="editor-panel" hidden>
       <div class="editor-tabs">
-        <button data-editor-tab="tools" type="button">Tools</button>
-        <button data-editor-tab="materials" type="button">Materials</button>
+        <button id="editor-menu" type="button">Menu</button>
+        <button data-editor-menu="tools" type="button">Tools</button>
+        <button data-editor-menu="materials" type="button">Materials</button>
+        <button data-editor-menu="special" type="button">Special</button>
+        <button data-editor-menu="resize" type="button">Resize</button>
       </div>
-      <div class="editor-tab-panel" data-editor-tab-panel="tools">
+      <div class="editor-menu-panel" data-editor-menu-panel="tools" hidden>
         <div class="editor-row">
           <button data-editor-tool="add" type="button">Add</button>
           <button data-editor-tool="remove" type="button">Remove</button>
@@ -34,7 +45,7 @@
           <button data-editor-brush="circle" type="button">Circle</button>
         </div>
       </div>
-      <div class="editor-tab-panel" data-editor-tab-panel="materials" hidden>
+      <div class="editor-menu-panel" data-editor-menu-panel="materials" hidden>
         <div class="editor-row">
           <span class="editor-label">Ground</span>
           <button data-editor-ground-material="void" type="button">Void</button>
@@ -47,10 +58,23 @@
           <button data-editor-obstacle-material="wood" type="button">Wood</button>
         </div>
       </div>
+      <div class="editor-menu-panel" data-editor-menu-panel="special" hidden>
+        <div class="editor-row">
+          <span class="editor-label">Portals</span>
+          <button data-editor-special-portal="portal1" type="button">Portal 1</button>
+          <button data-editor-special-portal="portal2" type="button">Portal 2</button>
+        </div>
+      </div>
+      <div class="editor-menu-panel" data-editor-menu-panel="resize" hidden>
+        <div class="editor-row">
+          <span class="editor-label">Length</span>
+          <input id="editor-height" type="number" min="1" max="128" value="28" aria-label="Map length" />
+          <span class="editor-label">Width</span>
+          <input id="editor-width" type="number" min="1" max="128" value="48" aria-label="Map width" />
+          <button id="editor-resize" type="button">Done</button>
+        </div>
+      </div>
       <div class="editor-row editor-map-actions">
-      <input id="editor-width" type="number" min="1" max="128" value="48" aria-label="Map width" />
-      <input id="editor-height" type="number" min="1" max="128" value="28" aria-label="Map height" />
-      <button id="editor-resize" type="button">Resize</button>
       <button id="editor-save-draft" type="button">Save Draft</button>
       <button id="editor-export" type="button">Export</button>
       <button id="editor-import" type="button">Import</button>

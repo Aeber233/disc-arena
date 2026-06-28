@@ -1,6 +1,12 @@
 import type { Vec2 } from "../math/vec2";
 import type { ActiveModifier } from "./effect";
 
+export interface PortalCooldown {
+  readonly portalPairId: string;
+  readonly exitPortalId: string;
+  remainingSteps: number;
+}
+
 /**
  * Dynamic physical objects controlled by the simulation.
  */
@@ -27,6 +33,7 @@ export interface BodyState {
   sleep: boolean;
   hp?: number;
   readonly breakThreshold?: number;
+  portalCooldown?: PortalCooldown | undefined;
   readonly tags: readonly string[];
   readonly modifiers: readonly ActiveModifier[];
 }

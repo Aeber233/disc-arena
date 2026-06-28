@@ -25,7 +25,7 @@ export interface GameState {
   turnIndex: number;
   currentPlayerId: string;
   phase: GamePhase;
-  readonly players: readonly PlayerState[];
+  players: PlayerState[];
   bodies: BodyState[];
   effects: ActiveEffect[];
   winnerTeamId?: string;

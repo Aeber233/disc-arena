@@ -1,6 +1,10 @@
 import { runEffectsForHook } from "../effects/effectRunner";
 import { stepWorld } from "../physics/stepWorld";
 import { allBodiesSleeping } from "../physics/systems/sleep";
+import {
+  createOutOfBoundsTracker,
+  updateOutOfBoundsBodies
+} from "../rules/outOfBounds";
 import type { GameState } from "../types/game";
 import type { MapData } from "../types/map";
 import type { ShotIntent } from "../types/shot";
@@ -26,6 +30,7 @@ export function simulateShot(
   const state = cloneGameState(gameState);
   const events: SimulationEvent[] = [];
   const frames: SimulationFrame[] = [];
+  const outOfBoundsTracker = createOutOfBoundsTracker();
 
   state.phase = "simulating";
 
@@ -50,6 +55,15 @@ export function simulateShot(
   for (let step = 1; step <= options.maxSteps; step += 1) {
     const stepResult = stepWorld(state, mapData, options, step);
     events.push(...stepResult.events);
+    events.push(
+      ...updateOutOfBoundsBodies(
+        state.bodies,
+        mapData,
+        outOfBoundsTracker,
+        options.fixedDt,
+        step
+      )
+    );
 
     if (
       options.recordFrames &&

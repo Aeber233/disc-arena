@@ -3,6 +3,7 @@ import type { BodyState } from "../types/body";
 import type { GameState } from "../types/game";
 import type { MapData } from "../types/map";
 import type { SimulationOptions } from "../types/simulation";
+import { PHYSICS_POWER_SCALE, PHYSICS_UNIT_SCALE } from "../physics/units";
 import { simulateShot } from "./simulateShot";
 import { shotIntentToVelocity } from "./shotPhysics";
 
@@ -17,6 +18,29 @@ describe("simulateShot", () => {
 
     expect(velocity.x).toBeCloseTo(0);
     expect(velocity.y).toBeCloseTo(10);
+
+    const heavyVelocity = shotIntentToVelocity(
+      {
+        actorBodyId: "disc-a",
+        angle: 0,
+        power: 10,
+        spinOffset: 0
+      },
+      2 * PHYSICS_UNIT_SCALE
+    );
+    expect(heavyVelocity.x).toBeCloseTo(5);
+    expect(heavyVelocity.y).toBeCloseTo(0);
+
+    const scaledVelocity = shotIntentToVelocity(
+      {
+        actorBodyId: "disc-a",
+        angle: 0,
+        power: 10 * PHYSICS_POWER_SCALE,
+        spinOffset: 0
+      },
+      PHYSICS_UNIT_SCALE
+    );
+    expect(scaledVelocity.x).toBeCloseTo(10 * PHYSICS_UNIT_SCALE);
   });
 
   it("applies shot intent and ends within maxSteps", () => {
@@ -26,7 +50,7 @@ describe("simulateShot", () => {
       {
         actorBodyId: "disc-a",
         angle: 0,
-        power: 5,
+        power: 80 * PHYSICS_POWER_SCALE,
         spinOffset: 0.25
       },
       {
@@ -36,6 +60,7 @@ describe("simulateShot", () => {
     );
 
     expect(result.finalState.bodies[0]?.velocity.x).toBeGreaterThan(0);
+    expect(result.finalState.bodies[0]?.position.x).toBeGreaterThan(0);
     expect(result.finalState.bodies[0]?.spin).toBeGreaterThan(0);
     expect(Math.max(...result.events.map((event) => event.step))).toBeLessThanOrEqual(3);
     expect(result.resultHash).toMatch(/^[0-9a-f]{8}$/);
@@ -88,8 +113,8 @@ function makeBody(
     teamId,
     position: { x: 0, y: 0 },
     velocity: { x: 0, y: 0 },
-    radius: 10,
-    mass: 1,
+    radius: 10 * PHYSICS_UNIT_SCALE,
+    mass: PHYSICS_UNIT_SCALE,
     damping: 0,
     spin: 0,
     spinControl: 1,

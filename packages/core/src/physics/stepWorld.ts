@@ -3,6 +3,7 @@ import type { GameState } from "../types/game";
 import type { MapData } from "../types/map";
 import type { BodyProxy } from "../types/portal";
 import type { SimulationEvent, SimulationOptions } from "../types/simulation";
+import { terrainDampingMultiplierAtPoint } from "../map/editableMap";
 import { solveCollisions } from "./collisions/solveCollisions";
 import { commitPortalTransitions } from "./portals/commitPortalTransitions";
 import { buildBodyProxies } from "./proxies/buildBodyProxies";
@@ -38,14 +39,21 @@ export function stepWorld(
   const collisionResult = solveCollisions(
     proxies,
     state.bodies,
+    mapData,
     options.collisionIterations,
+    options.fixedDt,
     step
   );
   events.push(...collisionResult.events);
 
   mapProxyImpulsesBackToBodies(collisionResult.proxies, state.bodies);
   events.push(...resolveTriggers(state.bodies, mapData, options.fixedDt, step));
-  applyDamping(state.bodies, options.fixedDt);
+  applyDamping(
+    state.bodies,
+    options.fixedDt,
+    undefined,
+    (body) => terrainDampingMultiplierAtPoint(mapData, body.position)
+  );
   updateSleepState(state.bodies);
   events.push(...commitPortalTransitions(state.bodies, mapData, step));
   events.push(...collectEvents(state.bodies, step));

@@ -1,14 +1,18 @@
 import { add, fromAngle } from "../math/vec2";
+import { PHYSICS_UNIT_SCALE } from "../physics/units";
 import type { BodyState } from "../types/body";
 import type { GameState } from "../types/game";
 import type { ShotIntent } from "../types/shot";
 import type { SimulationEvent } from "../types/simulation";
 
 /**
- * Converts input shot data into physical velocity and spin changes.
+ * Converts input shot force into a velocity change. Power is kept at the same
+ * coarse scale as distances, then converted into scaled velocity by mass.
  */
-export function shotIntentToVelocity(shotIntent: ShotIntent) {
-  return fromAngle(shotIntent.angle, Math.max(0, shotIntent.power));
+export function shotIntentToVelocity(shotIntent: ShotIntent, mass = PHYSICS_UNIT_SCALE) {
+  const safeMass = mass > 0 ? mass : PHYSICS_UNIT_SCALE;
+  const speedDelta = (Math.max(0, shotIntent.power) * PHYSICS_UNIT_SCALE) / safeMass;
+  return fromAngle(shotIntent.angle, speedDelta);
 }
 
 export function applyShotIntentToState(
@@ -29,7 +33,7 @@ export function applyShotIntentToState(
   }
 
   wakeBody(actor);
-  actor.velocity = add(actor.velocity, shotIntentToVelocity(shotIntent));
+  actor.velocity = add(actor.velocity, shotIntentToVelocity(shotIntent, actor.mass));
   actor.spin += shotIntent.spinOffset * actor.spinControl;
 
   return [
@@ -40,6 +44,7 @@ export function applyShotIntentToState(
       data: {
         angle: shotIntent.angle,
         power: shotIntent.power,
+        actorMass: actor.mass,
         spinOffset: shotIntent.spinOffset,
         itemId: shotIntent.itemId
       }

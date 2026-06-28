@@ -8,9 +8,13 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm --workspace @disc-arena/core run build",
-    "test": "npm --workspace @disc-arena/core test",
-    "typecheck": "npm --workspace @disc-arena/core run typecheck"
+    "build": "npm --workspace @disc-arena/core run build && npm --workspace @disc-arena/server run build && npm --workspace @disc-arena/client run build",
+    "client:dev": "npm --workspace @disc-arena/client run dev",
+    "client:build": "npm --workspace @disc-arena/client run build",
+    "server:dev": "npm --workspace @disc-arena/server run dev",
+    "server:build": "npm --workspace @disc-arena/server run build",
+    "test": "npm --workspace @disc-arena/core test && npm --workspace @disc-arena/server test",
+    "typecheck": "npm --workspace @disc-arena/core run typecheck && npm --workspace @disc-arena/server run typecheck && npm --workspace @disc-arena/client run typecheck"
   },
   "devDependencies": {
     "typescript": "^5.5.4",

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Disc Arena Physics Test</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <canvas id="game" aria-label="Disc Arena physics test"></canvas>
+    <div id="mode-bar">
+      <button id="mode-play" type="button">Play</button>
+      <button id="mode-editor" type="button">Editor</button>
+    </div>
+    <div id="hud" aria-live="polite"></div>
+    <button id="reset" type="button">Reset</button>
+    <div id="editor-panel" hidden>
+      <div class="editor-tabs">
+        <button data-editor-tab="tools" type="button">Tools</button>
+        <button data-editor-tab="materials" type="button">Materials</button>
+      </div>
+      <div class="editor-tab-panel" data-editor-tab-panel="tools">
+        <div class="editor-row">
+          <button data-editor-tool="add" type="button">Add</button>
+          <button data-editor-tool="remove" type="button">Remove</button>
+          <button data-editor-tool="shape" type="button">Shape</button>
+          <button data-editor-tool="drag" type="button">Drag</button>
+        </div>
+        <div class="editor-row">
+          <button data-editor-brush="1" type="button">1x1</button>
+          <button data-editor-brush="2" type="button">2x2</button>
+          <button data-editor-brush="4" type="button">4x4</button>
+          <button data-editor-brush="rect" type="button">Rectangle</button>
+          <button data-editor-brush="circle" type="button">Circle</button>
+        </div>
+      </div>
+      <div class="editor-tab-panel" data-editor-tab-panel="materials" hidden>
+        <div class="editor-row">
+          <span class="editor-label">Ground</span>
+          <button data-editor-ground-material="void" type="button">Void</button>
+          <button data-editor-ground-material="grass" type="button">Grass</button>
+          <button data-editor-ground-material="ice" type="button">Ice</button>
+          <button data-editor-ground-material="sand" type="button">Sand</button>
+        </div>
+        <div class="editor-row">
+          <span class="editor-label">Obstacle</span>
+          <button data-editor-obstacle-material="wood" type="button">Wood</button>
+        </div>
+      </div>
+      <div class="editor-row editor-map-actions">
+      <input id="editor-width" type="number" min="1" max="128" value="48" aria-label="Map width" />
+      <input id="editor-height" type="number" min="1" max="128" value="28" aria-label="Map height" />
+      <button id="editor-resize" type="button">Resize</button>
+      <button id="editor-save-draft" type="button">Save Draft</button>
+      <button id="editor-export" type="button">Export</button>
+      <button id="editor-import" type="button">Import</button>
+      <input id="editor-import-file" type="file" accept=".damap,text/plain" hidden />
+      <span id="editor-status" aria-live="polite"></span>
+      </div>
+    </div>
+  </body>
+</html>

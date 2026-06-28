@@ -8,9 +8,35 @@ import type { PortalPair } from "./portal";
 export interface MapData {
   readonly id: string;
   readonly name?: string;
+  readonly tableBounds?: TableBounds;
+  readonly terrain?: MapTerrainData;
   readonly colliders: readonly MapCollider[];
   readonly triggers: readonly MapTrigger[];
   readonly portals: readonly PortalPair[];
+}
+
+export interface TableBounds {
+  readonly left: number;
+  readonly top: number;
+  readonly right: number;
+  readonly bottom: number;
+}
+
+export type GroundMaterial = "void" | "grass" | "ice" | "sand";
+export type ObstacleMaterial = "wood";
+export type MapCellShape = 0 | 1 | 2 | 3 | 4;
+
+export interface MapTerrainData {
+  readonly origin: Vec2;
+  readonly widthCells: number;
+  readonly heightCells: number;
+  readonly cellSize: number;
+  readonly cells: readonly MapTerrainCell[];
+}
+
+export interface MapTerrainCell {
+  readonly material: GroundMaterial;
+  readonly shape: MapCellShape;
 }
 
 export type MapCollider =

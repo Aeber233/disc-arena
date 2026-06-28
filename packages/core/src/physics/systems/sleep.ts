@@ -1,5 +1,6 @@
 import { length } from "../../math/vec2";
 import type { BodyState } from "../../types/body";
+import { PHYSICS_UNIT_SCALE } from "../units";
 
 export interface SleepOptions {
   readonly speedSleepThreshold: number;
@@ -7,8 +8,8 @@ export interface SleepOptions {
 }
 
 export const DEFAULT_SLEEP_OPTIONS: SleepOptions = {
-  speedSleepThreshold: 0.02,
-  spinSleepThreshold: 0.002
+  speedSleepThreshold: 0.5 * PHYSICS_UNIT_SCALE,
+  spinSleepThreshold: 0.02
 };
 
 export function isBodySleeping(

@@ -1,3 +1,4 @@
+import { PHYSICS_POWER_SCALE } from "../physics/units";
 import type { SimulationOptions } from "../types/simulation";
 
 /**
@@ -15,7 +16,7 @@ export interface BotOptions {
 export const DEFAULT_BOT_OPTIONS: BotOptions = {
   maxCandidates: 24,
   maxThinkTimeMs: 25,
-  powers: [20, 45, 70],
+  powers: [20, 45, 70].map((power) => power * PHYSICS_POWER_SCALE),
   spinOffsets: [-0.5, 0, 0.5],
   rngSeed: 1,
   simulationOptions: {

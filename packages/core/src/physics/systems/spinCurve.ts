@@ -1,7 +1,8 @@
 import { add, length, normalize, rotate, scale } from "../../math/vec2";
 import type { BodyState } from "../../types/body";
+import { PHYSICS_UNIT_SCALE } from "../units";
 
-const SPIN_CURVE_ACCELERATION = 0.015;
+const SPIN_CURVE_ACCELERATION = 0.015 * PHYSICS_UNIT_SCALE;
 
 /**
  * Game-feel spin model: spin bends velocity by applying a small side

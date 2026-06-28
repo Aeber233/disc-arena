@@ -12,6 +12,7 @@ export * from "./types/simulation";
 export * from "./effects/effectRunner";
 
 export * from "./physics/stepWorld";
+export * from "./physics/units";
 export * from "./physics/proxies/buildBodyProxies";
 export * from "./physics/proxies/portalTransforms";
 export * from "./physics/systems/continuousEffects";
@@ -22,6 +23,10 @@ export * from "./physics/systems/sleep";
 export * from "./physics/collisions/solveCollisions";
 export * from "./physics/triggers/resolveTriggers";
 export * from "./physics/portals/commitPortalTransitions";
+
+export * from "./map/testMap";
+export * from "./map/editableMap";
+export * from "./rules/outOfBounds";
 
 export * from "./simulation/hash";
 export * from "./simulation/shotPhysics";

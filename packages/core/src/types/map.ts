@@ -23,8 +23,8 @@ export interface TableBounds {
   readonly bottom: number;
 }
 
-export type GroundMaterial = "void" | "grass" | "ice" | "sand";
-export type ObstacleMaterial = "wood";
+export type GroundMaterial = "void" | "grass" | "ice" | "sand" | "cloud";
+export type ObstacleMaterial = "wood" | "elastic_wall" | "sticky_wall" | "airbag";
 export type MapCellShape = 0 | 1 | 2 | 3 | 4;
 
 export interface MapTerrainData {
@@ -65,6 +65,7 @@ export interface StaticWallCollider {
   readonly id: string;
   readonly start: Vec2;
   readonly end: Vec2;
+  readonly material?: ObstacleMaterial;
   readonly restitution?: number;
   /**
    * Optional unit normal pointing from the collision edge into the solid

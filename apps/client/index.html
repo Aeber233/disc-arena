@@ -12,15 +12,55 @@
       <div class="menu-shell">
         <h1>Disc Arena</h1>
         <div class="menu-actions">
-          <button id="menu-play" type="button">Play</button>
-          <button id="menu-editor" type="button">Edit</button>
+          <input id="player-name" type="text" maxlength="24" placeholder="Name" aria-label="Player name" />
+          <button id="room-create" type="button">Create Room</button>
+          <div class="menu-join-row">
+            <input id="room-code" type="text" maxlength="4" placeholder="Room" aria-label="Room code" />
+            <button id="room-join" type="button">Join Room</button>
+          </div>
+          <button id="menu-editor" type="button">Map Editor</button>
+          <div id="menu-status" class="menu-status" aria-live="polite"></div>
         </div>
       </div>
     </div>
     <div id="play-panel">
       <button id="play-menu" type="button">Menu</button>
-      <div id="hud" aria-live="polite"></div>
-      <button id="reset" type="button">Reset</button>
+      <section id="hud" class="play-card" aria-live="polite">
+        <button class="play-card-title" data-collapse-panel="hud" type="button">
+          <span>Status</span>
+          <span id="hud-summary">No room</span>
+        </button>
+        <div id="hud-body" class="play-card-body"></div>
+      </section>
+      <section id="room-panel" class="room-panel play-card">
+        <button class="play-card-title" data-collapse-panel="room" type="button">
+          <span>Room</span>
+          <span id="room-summary">Not joined</span>
+        </button>
+        <div id="room-body" class="play-card-body">
+          <div class="room-row room-actions">
+            <button id="room-start" type="button">Start</button>
+            <button id="reset" type="button">Reset</button>
+            <button id="room-import" type="button">Import Map</button>
+            <button id="room-add-bot" type="button">Add Bot</button>
+            <button id="room-leave" type="button">Leave</button>
+          </div>
+          <div class="room-row room-shrink-controls">
+            <label>
+              <input id="room-shrink-enabled" type="checkbox" />
+              Shrink
+            </label>
+            <label>
+              x
+              <input id="room-shrink-rounds" type="number" min="1" max="99" value="4" />
+            </label>
+            <button id="room-shrink-apply" type="button">Apply</button>
+          </div>
+          <input id="room-import-file" type="file" accept=".damap,text/plain" hidden />
+          <div id="room-status" class="room-status" aria-live="polite"></div>
+          <div id="room-members" class="room-members"></div>
+        </div>
+      </section>
     </div>
     <div id="editor-panel" hidden>
       <div class="editor-tabs">
@@ -28,6 +68,7 @@
         <button data-editor-menu="tools" type="button">Tools</button>
         <button data-editor-menu="materials" type="button">Materials</button>
         <button data-editor-menu="special" type="button">Special</button>
+        <button data-editor-menu="balls" type="button">Balls</button>
         <button data-editor-menu="resize" type="button">Resize</button>
       </div>
       <div class="editor-menu-panel" data-editor-menu-panel="tools" hidden>
@@ -42,7 +83,8 @@
           <button data-editor-brush="2" type="button">2x2</button>
           <button data-editor-brush="4" type="button">4x4</button>
           <button data-editor-brush="rect" type="button">Rectangle</button>
-          <button data-editor-brush="circle" type="button">Circle</button>
+          <button data-editor-brush="circle-cell" type="button">Circle Cell</button>
+          <button data-editor-brush="circle-grid" type="button">Circle Grid</button>
         </div>
       </div>
       <div class="editor-menu-panel" data-editor-menu-panel="materials" hidden>
@@ -52,10 +94,14 @@
           <button data-editor-ground-material="grass" type="button">Grass</button>
           <button data-editor-ground-material="ice" type="button">Ice</button>
           <button data-editor-ground-material="sand" type="button">Sand</button>
+          <button data-editor-ground-material="cloud" type="button">Cloud</button>
         </div>
         <div class="editor-row">
           <span class="editor-label">Obstacle</span>
           <button data-editor-obstacle-material="wood" type="button">Wood</button>
+          <button data-editor-obstacle-material="elastic_wall" type="button">Elastic</button>
+          <button data-editor-obstacle-material="sticky_wall" type="button">Sticky</button>
+          <button data-editor-obstacle-material="airbag" type="button">Airbag</button>
         </div>
       </div>
       <div class="editor-menu-panel" data-editor-menu-panel="special" hidden>
@@ -63,6 +109,17 @@
           <span class="editor-label">Portals</span>
           <button data-editor-special-portal="portal1" type="button">Portal 1</button>
           <button data-editor-special-portal="portal2" type="button">Portal 2</button>
+        </div>
+      </div>
+      <div class="editor-menu-panel" data-editor-menu-panel="balls" hidden>
+        <div class="editor-row editor-ball-sizes">
+          <span class="editor-label">Size</span>
+          <button data-editor-ball-size="10px" type="button" aria-label="10 pixel ball"><span style="--ball-preview-size: 10px"></span></button>
+          <button data-editor-ball-size="14px" type="button" aria-label="14 pixel ball"><span style="--ball-preview-size: 14px"></span></button>
+          <button data-editor-ball-size="18px" type="button" aria-label="18 pixel ball"><span style="--ball-preview-size: 18px"></span></button>
+          <button data-editor-ball-size="22px" type="button" aria-label="22 pixel ball"><span style="--ball-preview-size: 22px"></span></button>
+          <button data-editor-ball-size="26px" type="button" aria-label="26 pixel ball"><span style="--ball-preview-size: 26px"></span></button>
+          <button data-editor-ball-size="32px" type="button" aria-label="32 pixel ball"><span style="--ball-preview-size: 32px"></span></button>
         </div>
       </div>
       <div class="editor-menu-panel" data-editor-menu-panel="resize" hidden>

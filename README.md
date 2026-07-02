@@ -1,142 +1,60 @@
 # Disc Arena
 
-Disc Arena 是一个基于 Web 的回合制 2D 圆盘物理竞技原型。当前版本已经包含可运行的桌球式试玩地图、Canvas 前端、本地地图编辑器、Socket.IO 测试房间，以及可复用的纯 TypeScript 核心逻辑包。
+Disc Arena 是一个 Web 回合制二维圆盘物理竞技游戏原型。玩家在自己的回合选择一个己方球体，像愤怒的小鸟一样拖拽瞄准并发射；服务端负责权威结算，客户端使用共享核心逻辑和服务端返回的关键结果播放动画并校正状态。
 
-项目仍处于原型阶段。它已经能验证核心物理、地图编辑、多人回合同步和传送门交互，但还没有完整账号系统、正式匹配、持久化存档、完整道具规则或生产级部署脚本。
+当前项目已经从最初的核心骨架推进到可本地联机测试的原型版本，但仍然不是完整商业游戏。它包含 Canvas 前端、Socket.IO 房间服务、地图编辑器、传送门、像素风渲染、多种地图材质、bot 输入接口、缩圈规则和一套共享 TypeScript 核心逻辑。
 
-## 当前功能
+## 当前状态
 
-### Play 模式
+- 支持创建房间、加入房间、房主开局、房主导入地图、房主添加 bot。
+- 最大房间人数为 6，bot 也占用房间人数。
+- 开局时地图上的球会尽量均分给玩家，并按玩家颜色显示外环。
+- 玩家只能击打自己的存活球体。
+- 如果一名玩家场上没有球，该玩家出局。
+- 当场上只剩一名玩家拥有存活球体时，该玩家胜利。
+- 服务端使用权威模拟，客户端不接收逐帧网络流，只接收击球意图、事件、最终状态和必要的最终地图。
+- 当前 bot 使用与真人完全一致的 `ShotIntent` 输入接口，只是输入由服务器脚本生成。临时逻辑会提交零力度击球，相当于跳过回合。
 
-- 主菜单提供 `Play` 和 `Edit` 两个入口。
-- Play 模式加载默认 `Billiards Table` 地图，使用一颗白球和一组三角排列的目标球。
-- Canvas 渲染桌面、木质边框、洞口、球体编号、运动拖尾、瞄准线和传送门影子代理。
-- 玩家通过拖拽球体蓄力并松开发射；拖拽距离会映射为 `ShotIntent.power`。
-- 支持滚轮缩放视图，中键或右键拖动画面。
-- HUD 显示连接状态、本地玩家编号、当前行动玩家、回合数、运动状态和剩余球数。
-- 客户端会先做本地预测播放，服务端结算完成后再用权威结果校正状态。
-- 离线或服务端不可用时，Reset 仍可重置本地测试状态；联网状态下 Reset 会广播房间重置。
+## 技术栈
 
-### 地图编辑器
+- TypeScript
+- Node.js
+- Vite
+- Canvas 2D
+- Socket.IO
+- Vitest
+- npm workspaces
 
-- Edit 模式提供可视化网格地图编辑。
-- 支持最大 `128x128` 单元格的地图尺寸调整。
-- 地面材料支持 `void`、`grass`、`ice`、`sand`，并在物理中映射到不同阻尼倍率。
-- 障碍层当前支持 `wood`，会在核心层转换为静态墙碰撞线段。
-- 单元格形状支持整格和四种斜三角形，用于绘制斜边地形或障碍。
-- 笔刷支持 `1x1`、`2x2`、`4x4`、矩形区域和圆形区域。
-- 工具支持添加、删除、切换形状和拖动画布。
-- 支持两组可编辑传送门；可拖动端点移动、拖动端帽调整长度、长按后旋转方向。
-- 支持保存草稿到浏览器 `localStorage`。
-- 支持导出 `.damap` 文本编码，以及导入相同编码的地图文件。
-- 地图编码当前为 `DAEM2`，并保留对旧 `DAEM1` 编码的解析兼容。
-
-### 多人测试房间
-
-- `apps/server` 提供一个 Socket.IO 公共测试房间。
-- 连接后按加入顺序分配 `player-1`、`player-2` 等玩家编号。
-- 房间广播 `room:joined`、`room:state`、`shot:started`、`shot:resolved` 和 `shot:rejected`。
-- 服务端校验提交的回合号、状态哈希、当前行动玩家、房间阶段和物体静止状态。
-- 每次合法击球由服务端权威模拟，随后推进回合并切换到下一个在线玩家。
-- 玩家断开连接时，房间会保留玩家记录但标记为离线；若当前行动玩家离线，会推进到下一个在线玩家。
-
-### 核心物理和规则
-
-- `packages/core` 是无 DOM、无网络依赖的纯 TypeScript 逻辑库，供服务端、客户端回放和 bot 评估复用。
-- 游戏状态通过 `GameState`、`BodyState`、`MapData`、`ShotIntent` 和 `SimulationResult` 等结构表达。
-- 物理单位采用 `PHYSICS_UNIT_SCALE` 放大比例，前端像素半径通过固定 tier 映射到世界半径。
-- 固定步长仿真管线包括效果钩子、旋转曲线、速度积分、位置积分、碰撞代理、碰撞求解、触发器、阻尼、休眠和传送门提交。
-- 圆形物体碰撞使用一维法线分解的弹性碰撞模型。
-- 静态墙碰撞支持线段最近点检测、穿透修正和 restitution 反弹。
-- 地形会影响阻尼：冰面更滑，沙地更慢，虚空不可通行。
-- 洞口触发器会淘汰球体；力场和拾取触发器已有事件路径。
-- 出界规则通过采样球体面积判断是否大比例离开可玩区域，并在持续一段时间后淘汰。
-- 状态哈希使用稳定 stringify 和 FNV-1a，支持量化后比较，便于客户端和服务端核对。
-
-### 传送门系统
-
-- 地图支持 `PortalPair`，每对包含 A/B 两个入口。
-- 核心提供传送门坐标变换、速度变换、端点计算和孔径检测。
-- 仿真中会为穿过传送门边界的球生成 `portal_shadow` 代理，允许跨门碰撞反馈。
-- 主代理和影子代理都有 clip mask，避免不可见半边产生错误碰撞。
-- 球心穿越传送门平面后会提交传送，位置和速度按入口/出口方向转换。
-- 传送后有短暂 cooldown，避免刚出门的球立刻反向重复触发。
-
-### Bot 与评估
-
-- core 中包含第一版 bot 搜索逻辑。
-- `generateCandidates` 会围绕敌方目标角度和伪随机角度生成候选击球。
-- `chooseBotShot` 使用 `fast_eval` 仿真配置在时间预算内选择最佳候选。
-- `scoreShot` 根据淘汰自己、淘汰队友、淘汰敌方和危险区位置进行启发式评分。
-
-## 代码架构
+## 项目结构
 
 ```text
 apps/
   client/
-    index.html          # Canvas、菜单、Play HUD、编辑器面板
-    src/main.ts         # 前端入口、渲染、输入、Socket.IO 同步和本地预测
-    src/mapEditor.ts    # 地图编辑器交互、绘制、导入导出和草稿保存
-    src/colors.ts       # 材质边缘色辅助函数
-    src/styles.css      # 页面、菜单、HUD 和编辑器样式
+    index.html
+    src/main.ts          # Canvas 渲染、输入、房间 UI、播放和校正
+    src/mapEditor.ts     # 地图编辑器
+    src/colors.ts        # 材质边缘色辅助
+    src/styles.css
   server/
-    src/server.ts       # HTTP + Socket.IO 服务器入口
-    src/room.ts         # 公共测试房间、玩家状态、击球校验和权威结算
+    src/server.ts        # HTTP + Socket.IO 入口
+    src/roomManager.ts   # 多房间和 socket 归属
+    src/room.ts          # 单房间大厅、开局、回合、胜负和权威模拟
+    src/botInput.ts      # 临时 bot 输入提供器
 packages/
   core/
-    src/types/          # 游戏、地图、物体、网络、传送门和仿真契约
-    src/math/           # Vec2 数学工具
-    src/map/            # 默认地图、桌球地图、可编辑地图和像素半径 tier
-    src/physics/        # 固定步长物理管线、碰撞、阻尼、休眠、传送门代理
-    src/rules/          # 出界等规则模块
-    src/simulation/     # 击球应用、整回合模拟和状态哈希
-    src/effects/        # 效果钩子派发
-    src/bot/            # 候选生成、快速评估和启发式评分
+    src/types/           # 游戏、地图、网络、模拟、传送门等共享类型
+    src/math/            # Vec2 工具
+    src/map/             # 默认地图、可编辑地图、动态材质、像素球半径档位
+    src/physics/         # 固定步长物理、碰撞、阻尼、传送门代理
+    src/rules/           # 出界、对局分配、缩圈
+    src/simulation/      # 击球应用、整回合模拟、状态 hash
+    src/bot/             # bot 候选和快速评估骨架
 config/
   network.local.env
   network.production.env.example
 ```
 
-### 数据流
-
-1. 客户端连接服务端并加入公共测试房间。
-2. 服务端返回 `RoomStatePayload`，包含玩家列表、地图、游戏状态和状态哈希。
-3. 当前玩家在 Canvas 中拖拽球体，客户端生成 `ShotSubmitPayload`。
-4. 客户端立即应用本地预测，让画面先滚动起来。
-5. 服务端校验状态哈希和回合权限，通过 `simulateShot` 做权威结算。
-6. 服务端广播 `ShotResolvedPayload`，客户端在本地物体静止后切换到权威最终状态。
-
-### 仿真管线
-
-`simulateShot` 负责一整次击球结算：
-
-```text
-onBeforeShot effect hooks
-applyShotIntentToState
-onAfterShotApplied effect hooks
-repeat stepWorld until all bodies sleep or maxSteps is reached
-updateOutOfBoundsBodies
-onSimulationEnd effect hooks
-hashGameState
-```
-
-`stepWorld` 负责单帧固定步长：
-
-```text
-continuous effects
-spin curve
-velocity integration
-position integration
-build body proxies
-solve body and wall collisions
-map proxy impulses back to bodies
-resolve triggers
-terrain-aware damping
-sleep state update
-commit portal transitions
-```
-
-## 开发命令
+## 快速启动
 
 安装依赖：
 
@@ -144,68 +62,216 @@ commit portal transitions
 npm install
 ```
 
-运行测试：
+启动服务端：
+
+```bash
+npm run server:dev
+```
+
+另开一个终端启动前端：
+
+```bash
+npm run client:dev
+```
+
+默认地址：
+
+- Server: `http://127.0.0.1:3000`
+- Client: `http://127.0.0.1:5173`
+
+## 常用命令
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
+
+工作区脚本：
+
+```bash
+npm run server:dev
+npm run client:dev
+npm run server:build
+npm run client:build
+```
+
+## 本地游玩流程
+
+1. 运行服务端和前端。
+2. 打开前端页面。
+3. 在主菜单输入玩家名并创建房间，或者输入房间码加入房间。
+4. 房主可以在大厅导入地图、添加 bot、配置缩圈。
+5. 房主点击 Start 开局。
+6. 当前玩家选择己方球体，按住鼠标拖拽并松开发射。
+7. 所有球停止后进入下一回合。
+
+## 地图编辑器
+
+主菜单中进入 Map Editor。编辑器使用最小网格作为世界单位，支持缩放和平移，最大地图尺寸为 `128 x 128`。
+
+地图包含多个图层：
+
+- Ground: 地面层
+- Portal: 传送门专用层
+- Obstacle: 障碍物层
+- Balls: 初始球体摆放
+
+编辑工具：
+
+- Add: 添加当前材质
+- Remove: 移除当前图层材质
+- Shape: 在整格和四种三角形之间循环
+- Drag: 平移视图
+- Rectangle: 用两个点填充矩形区域
+- Circle Cell: 以格子中心为圆心画圆
+- Circle Grid: 以网格交点为圆心画圆
+
+地图可以导出为 `.damap` 文本文件，也可以在 Play 房间大厅由房主导入。导入房间的地图会同步给房间内所有玩家。
+
+## 地面材质
+
+| 材质 | 类型 | 表现 |
+| --- | --- | --- |
+| `void` | 地面 | 虚空区域，球体持续离开可玩区域后会出界 |
+| `grass` | 地面 | 默认桌面材质 |
+| `ice` | 地面 | 低阻尼，球更滑 |
+| `sand` | 地面 | 高阻尼，球更快慢下来 |
+| `cloud` | 地面 | 近白淡蓝色云层，球滚过后会消散并变成 `void` |
+
+云层消散由核心模拟处理，基于球体从上一帧到当前帧的扫过路径和球半径计算。服务端权威模拟产生 `terrain_changed` 事件，并在需要时通过 `shot:resolved.finalMapData` 同步最终地图。
+
+## 障碍物材质
+
+| 材质 | 类型 | 反弹系数 | 表现 |
+| --- | --- | --- | --- |
+| `wood` | 障碍物 | `1.0` | 普通红棕木墙 |
+| `elastic_wall` | 障碍物 | `1.6` | 弹力墙，反弹更强 |
+| `sticky_wall` | 障碍物 | `0.4` | 粘性板，反弹明显更弱 |
+| `airbag` | 障碍物 | `1.0` | 气囊，第一次被撞后局部消失 |
+
+气囊碰撞会产生 `obstacle_changed` 事件。消失区域以碰撞点为中心，沿被撞墙段方向向两侧各延长 `球半径 * 0.4`，随后重建该地图的静态墙体碰撞线段。
+
+## 传送门
+
+当前支持最多两对传送门。传送门严格成对出现，球体穿越入口后会从另一端出现，并按出口方向转换速度。球体半穿越时会生成 `portal_shadow` 代理，让入口端和出口端都能参与碰撞反馈。
+
+地图编辑器中可以添加或移除 Portal 1 和 Portal 2，移动端点、调整长度，并通过角度输入控制方向。
+
+## 房间和对局规则
+
+- 房间只存在于内存中，当前没有数据库和账号系统。
+- 房间码用于多人加入同一局。
+- 大厅阶段允许加入玩家、导入地图、添加 bot、配置缩圈。
+- 进行中普通加入会被拒绝，同浏览器 rejoin token 可用于重连。
+- 开局时所有球按 seed 确定性随机分配给玩家。
+- 拥有球更少的玩家行动顺序更靠前。
+- 离线玩家会保留球，但回合会被跳过。
+- bot 和真人都走同一个击球校验入口。
+
+## 缩圈规则
+
+房主可在大厅开启缩圈，并设置参数 `x`。开启后，缩圈会在所有玩家都完成过一轮行动后开始，毒圈外区域会用半透明粉色覆盖，并在 `x` 轮后完全覆盖地图。
+
+如果某个球在其所属玩家一次行动开始时和结束时都完全处于毒圈外，该球会被判定出界。
+
+## 同步策略
+
+项目目标是适配低带宽服务器，因此不发送每帧运动轨迹。
+
+服务端广播的关键消息包括：
+
+- `room:joined`
+- `room:state`
+- `shot:started`
+- `shot:resolved`
+- `shot:rejected`
+
+一次合法击球的流程：
+
+1. 客户端提交 `ShotIntent`。
+2. 服务端校验当前玩家、回合号、状态 hash、球体归属和静止状态。
+3. 服务端运行 `simulateShot` 做权威结算。
+4. 服务端返回初始状态、事件、可选帧、最终状态、结果 hash 和可选最终地图。
+5. 客户端根据权威数据播放本回合动画，最后应用最终状态。
+
+## 核心物理
+
+`packages/core` 是纯逻辑库，不依赖 DOM、Canvas、Socket.IO、浏览器 API 或 Node 文件系统。
+
+核心约束：
+
+- 物理状态统一使用 `Vec2` 表示位置和速度。
+- `ShotIntent` 使用 `angle + power + spinOffset`，进入模拟时转换为速度和旋转变化。
+- `power` 按力处理，同样力度击打轻球会获得更高速度。
+- 圆形 body-body 碰撞使用动量和动能守恒的一维法线分解模型。
+- 静态墙体使用线段最近点、穿透修正和 restitution 反弹。
+- 阻尼、睡眠、地面材质、传送门、出界和动态材质都在核心模拟管线中处理。
+
+单步管线大致为：
+
+```text
+continuous effects
+spin curve
+velocity integration
+position integration
+dynamic terrain updates
+body proxies
+body and wall collisions
+dynamic obstacle updates
+proxy feedback
+triggers
+damping
+sleep
+portal transitions
+events
+```
+
+## 测试覆盖
+
+当前测试覆盖核心逻辑和服务端房间逻辑，包括：
+
+- Vec2 数学
+- 击球转换
+- 阻尼和休眠
+- 圆形碰撞和墙体碰撞
+- 传送门转换、影子代理和穿越提交
+- 出界规则
+- 缩圈规则
+- 对局分球、出局和胜利
+- 地图编码、压缩、导入导出、画刷和材质转换
+- 云层消散和气囊消失
+- bot 候选和快速评估骨架
+- 房间创建、加入、开局、导入地图、添加 bot、回合校验和断线处理
+
+运行：
 
 ```bash
 npm test
 ```
 
-类型检查：
-
-```bash
-npm run typecheck
-```
-
-构建所有 workspace：
-
-```bash
-npm run build
-```
-
-本地开发通常需要两个终端：
-
-```bash
-npm run server:dev
-npm run client:dev
-```
-
-默认服务地址：
-
-- Server: `http://127.0.0.1:3000`
-- Client: `http://127.0.0.1:5173`
-
 ## 网络配置
 
-本地默认配置在 `config/network.local.env`：
+本地配置占位文件：
 
-```env
-PORT=3000
-CLIENT_ORIGIN=http://127.0.0.1:5173
-VITE_SOCKET_URL=http://127.0.0.1:3000
+```text
+config/network.local.env
 ```
 
-生产占位配置在 `config/network.production.env.example`。部署时需要根据实际域名填写：
+生产配置占位文件：
 
-- 服务端读取 `PORT` 和 `CLIENT_ORIGIN`。
-- 客户端读取 `VITE_SOCKET_URL`。
+```text
+config/network.production.env.example
+```
 
-## 测试覆盖
-
-当前测试集中在共享核心和房间逻辑：
-
-- 向量数学和状态哈希基础。
-- 击球仿真、阻尼休眠和出界淘汰。
-- 圆形碰撞、墙碰撞和传送门代理。
-- 传送门坐标变换、穿越提交和 stepWorld 集成。
-- 可编辑地图编码、解码、校验、笔刷、尺寸调整和地图转换。
-- 桌球地图的洞口、球体布局和可玩区域。
-- Bot 候选搜索与快速评估。
-- Socket.IO 房间的回合权限、断线处理和低带宽结算 payload。
+当前生产配置只是模板，需要部署时填写真实域名和服务地址。
 
 ## 当前边界
 
-- 当前 Play 模式是测试原型，不是完整游戏规则。
-- 客户端 UI 还没有正式道具栏、计分板、房间列表或匹配流程。
-- `ShotIntent.spinOffset` 已在核心中支持，但当前前端发射交互暂时提交 `0`。
-- effect hook 目前主要记录派发事件，具体道具和技能行为仍待接入。
-- 地图编辑器可以导出地图文档，但 Play 模式当前仍加载内置 `Billiards Table`。
+- 房间是内存房间，服务重启后状态会丢失。
+- 没有账号、匹配、持久化地图库或排行榜。
+- bot 目前只有临时输入脚本，还不是完整 AI 玩家。
+- 地图编辑器只做本地编辑和房间导入，不做服务器保存。
+- 碰撞系统仍是原型级，暂不包含复杂多边形 SAT/GJK 或大型物理引擎。
+- 美术仍是 Canvas 像素风原型，不是最终资源管线。
+

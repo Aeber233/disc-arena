@@ -23,7 +23,7 @@ body {
   z-index: 4;
   display: grid;
   place-items: center;
-  background: rgba(15, 20, 18, 0.32);
+  background: rgba(8, 14, 12, 0.78);
 }
 
 #main-menu[hidden] {
@@ -50,19 +50,48 @@ body {
   gap: 10px;
 }
 
-.menu-actions button {
+.menu-join-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.menu-actions button,
+.menu-actions input {
   height: 42px;
   border: 1px solid rgba(255, 255, 255, 0.36);
   border-radius: 6px;
   background: rgba(248, 248, 243, 0.1);
   color: #fff;
   font: inherit;
+}
+
+.menu-actions input {
+  min-width: 0;
+  padding: 0 12px;
+}
+
+.menu-actions button {
   font-weight: 700;
   cursor: pointer;
 }
 
-.menu-actions button:hover {
+.menu-actions button:hover,
+.menu-actions input:hover {
   background: rgba(248, 248, 243, 0.2);
+}
+
+.menu-actions button:disabled,
+.menu-actions input:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.menu-status {
+  min-height: 18px;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 #game {
@@ -74,28 +103,70 @@ body {
   cursor: crosshair;
 }
 
-#hud {
+.play-card {
   position: fixed;
-  top: 64px;
-  left: 16px;
-  min-width: 220px;
-  height: 36px;
-  padding: 0 14px;
-  display: flex;
-  align-items: center;
+  z-index: 3;
   border: 1px solid rgba(255, 255, 255, 0.36);
   border-radius: 6px;
-  background: rgba(12, 27, 20, 0.72);
+  background: rgba(12, 27, 20, 0.66);
+  backdrop-filter: blur(6px);
   color: #fff;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1;
-  pointer-events: none;
   user-select: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.play-card-title {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 10px;
+  border: 0;
+  background: rgba(248, 248, 243, 0.06);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.play-card-title span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.74);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.play-card-body {
+  padding: 10px;
+}
+
+.play-card.is-collapsed .play-card-body {
+  display: none;
+}
+
+#hud {
+  top: 64px;
+  left: 16px;
+  width: min(520px, calc(100vw - 32px));
+}
+
+#hud-body {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 #play-panel[hidden] {
   display: none;
+}
+
+#play-panel {
+  color: #fff;
 }
 
 #play-menu {
@@ -112,18 +183,145 @@ body {
   cursor: pointer;
 }
 
-#reset {
+.room-panel {
   position: fixed;
-  top: 64px;
+  z-index: 3;
+  top: 16px;
   right: 16px;
-  height: 36px;
-  padding: 0 14px;
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  border-radius: 6px;
-  background: rgba(12, 27, 20, 0.72);
+  width: min(330px, calc(100vw - 32px));
+}
+
+.room-row {
+  display: flex;
+  gap: 8px;
+}
+
+.room-actions {
+  flex-wrap: wrap;
+}
+
+.room-row input {
+  min-width: 0;
+  flex: 1;
+}
+
+.room-panel button,
+.room-panel input {
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 5px;
+  background: rgba(248, 248, 243, 0.08);
   color: #fff;
   font: inherit;
+}
+
+.room-panel input {
+  padding: 0 10px;
+}
+
+.room-panel button {
+  padding: 0 12px;
   cursor: pointer;
+  font-weight: 700;
+}
+
+.room-panel button:disabled,
+.room-panel input:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.room-panel button:not(:disabled):hover,
+.room-panel input:not(:disabled):hover {
+  background: rgba(248, 248, 243, 0.18);
+}
+
+.room-panel > .play-card-title {
+  height: auto;
+  border: 0;
+  border-radius: 6px 6px 0 0;
+  background: rgba(248, 248, 243, 0.06);
+}
+
+.room-actions button {
+  flex: 1;
+  min-width: 82px;
+}
+
+.room-shrink-controls {
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  background: rgba(255, 92, 168, 0.08);
+}
+
+.room-shrink-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.84);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.room-shrink-controls input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+.room-shrink-controls input[type="number"] {
+  width: 58px;
+}
+
+.room-shrink-controls button {
+  margin-left: auto;
+}
+
+.room-status {
+  min-height: 18px;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.room-members {
+  display: grid;
+  gap: 6px;
+}
+
+.room-member {
+  display: grid;
+  grid-template-columns: 16px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 5px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.12);
+  font-size: 13px;
+}
+
+.room-member-color {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.72);
+  background: var(--member-color);
+}
+
+.room-member-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-member-meta {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 #play-menu:hover,
@@ -202,6 +400,23 @@ body {
 .editor-map-actions {
   padding-top: 2px;
   border-top: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.editor-ball-sizes button {
+  min-width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+}
+
+.editor-ball-sizes button span {
+  width: var(--ball-preview-size);
+  height: var(--ball-preview-size);
+  display: block;
+  border: 2px solid #050505;
+  border-radius: 50%;
+  background: #f8f8f3;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18);
 }
 
 .editor-label {

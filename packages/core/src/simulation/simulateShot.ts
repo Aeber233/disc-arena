@@ -9,6 +9,7 @@ import type { GameState } from "../types/game";
 import type { MapData } from "../types/map";
 import type { ShotIntent } from "../types/shot";
 import type {
+  SimulationBodySnapshot,
   SimulationEvent,
   SimulationFrame,
   SimulationOptions,
@@ -28,6 +29,7 @@ export function simulateShot(
 ): SimulationResult {
   const initialState = cloneGameState(gameState);
   const state = cloneGameState(gameState);
+  const mapState = cloneMapData(mapData);
   const events: SimulationEvent[] = [];
   const frames: SimulationFrame[] = [];
   const outOfBoundsTracker = createOutOfBoundsTracker();
@@ -37,7 +39,7 @@ export function simulateShot(
   events.push(
     ...runEffectsForHook(state.effects, "onBeforeShot", {
       state,
-      mapData,
+      mapData: mapState,
       step: 0,
       bodyIds: [shotIntent.actorBodyId]
     }).events
@@ -46,24 +48,23 @@ export function simulateShot(
   events.push(
     ...runEffectsForHook(state.effects, "onAfterShotApplied", {
       state,
-      mapData,
+      mapData: mapState,
       step: 0,
       bodyIds: [shotIntent.actorBodyId]
     }).events
   );
 
   for (let step = 1; step <= options.maxSteps; step += 1) {
-    const stepResult = stepWorld(state, mapData, options, step);
-    events.push(...stepResult.events);
-    events.push(
-      ...updateOutOfBoundsBodies(
-        state.bodies,
-        mapData,
-        outOfBoundsTracker,
-        options.fixedDt,
-        step
-      )
+    const stepResult = stepWorld(state, mapState, options, step);
+    events.push(...withBodySnapshots(stepResult.events, state));
+    const outOfBoundsEvents = updateOutOfBoundsBodies(
+      state.bodies,
+      mapState,
+      outOfBoundsTracker,
+      options.fixedDt,
+      step
     );
+    events.push(...withBodySnapshots(outOfBoundsEvents, state));
 
     if (
       options.recordFrames &&
@@ -83,14 +84,22 @@ export function simulateShot(
   events.push(
     ...runEffectsForHook(state.effects, "onSimulationEnd", {
       state,
-      mapData,
+      mapData: mapState,
       step: events.at(-1)?.step ?? 0
     }).events
   );
+  const finalStep = events.at(-1)?.step ?? 0;
+  if (
+    options.recordFrames &&
+    (frames.length === 0 || frames.at(-1)?.step !== finalStep)
+  ) {
+    frames.push({ step: finalStep, state: cloneGameState(state) });
+  }
 
   const result: SimulationResult = {
     initialState,
     finalState: state,
+    finalMapData: mapState,
     events,
     resultHash: hashGameState(state, options.quantize ?? false)
   };
@@ -104,4 +113,48 @@ export function simulateShot(
 
 function cloneGameState(state: GameState): GameState {
   return JSON.parse(JSON.stringify(state)) as GameState;
+}
+
+function cloneMapData(mapData: MapData): MapData {
+  return JSON.parse(JSON.stringify(mapData)) as MapData;
+}
+
+function withBodySnapshots(
+  events: readonly SimulationEvent[],
+  state: GameState
+): readonly SimulationEvent[] {
+  return events.map((event) => {
+    if (!shouldSnapshotEvent(event) || !event.bodyIds?.length) {
+      return event;
+    }
+
+    return {
+      ...event,
+      bodySnapshots: event.bodyIds
+        .map((bodyId) => state.bodies.find((body) => body.id === bodyId))
+        .filter((body): body is GameState["bodies"][number] => body !== undefined)
+        .map(snapshotBody)
+    };
+  });
+}
+
+function shouldSnapshotEvent(event: SimulationEvent): boolean {
+  return (
+    event.type === "collision" ||
+    event.type === "wall_collision" ||
+    event.type === "body_out_of_bounds"
+  );
+}
+
+function snapshotBody(body: GameState["bodies"][number]): SimulationBodySnapshot {
+  return {
+    id: body.id,
+    position: { ...body.position },
+    velocity: { ...body.velocity },
+    spin: body.spin,
+    alive: body.alive,
+    sleep: body.sleep,
+    radius: body.radius,
+    mass: body.mass
+  };
 }

@@ -15,8 +15,11 @@ export interface PlayerState {
   readonly id: string;
   readonly teamId: string;
   readonly name?: string;
+  readonly color?: string;
   readonly connected?: boolean;
+  readonly eliminated?: boolean;
   readonly isBot?: boolean;
+  readonly turnOrderIndex?: number;
 }
 
 export interface GameState {

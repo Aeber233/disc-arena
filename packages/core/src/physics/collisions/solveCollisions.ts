@@ -230,6 +230,8 @@ function solveWallCollision(
     bodyIds: [proxy.bodyId],
     data: {
       wallId: wall.id,
+      collisionPoint: closest,
+      material: wall.material,
       penetration,
       restitution: wall.restitution ?? 1
     }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BodyState } from "../types/body";
+import type { EditableMapDocument } from "./editableMap";
 import { applyDamping } from "../physics/systems/damping";
 import { PHYSICS_UNIT_SCALE } from "../physics/units";
 import {
@@ -7,17 +8,22 @@ import {
   updateOutOfBoundsBodies
 } from "../rules/outOfBounds";
 import {
+  addEditableBallPlacement,
   applyEditableMapBrush,
+  canPlaceEditableBall,
   createDefaultEditableMapDocument,
   decodeEditableMapDocument,
   EDITABLE_MAP_ENCODED_PREFIX,
   EDITABLE_MAP_LEGACY_ENCODED_PREFIX,
+  EDITABLE_MAP_PREVIOUS_ENCODED_PREFIX,
+  EDITABLE_MAP_V2_ENCODED_PREFIX,
   EDITABLE_PORTAL_MIN_LENGTH_CELLS,
   encodeEditableMapDocument,
   EDITOR_MAP_CELL_SIZE,
   EDITOR_MAP_MAX_WIDTH_CELLS,
   editableMapToMapData,
   parseEditableMapDocument,
+  removeEditableBallPlacement,
   resizeEditableMapDocument,
   setEditablePortalPair,
   terrainDampingMultiplierAtPoint,
@@ -78,7 +84,7 @@ describe("editable map", () => {
     expect(resized.obstacleLayer).toHaveLength(128 * 128);
   });
 
-  it("encodes DAEM2 maps as a long string and decodes portals without JSON", () => {
+  it("encodes DAEM4 maps as a compressed string and decodes portals and balls without JSON", () => {
     const painted = applyEditableMapBrush(createDefaultEditableMapDocument(), {
       layer: "obstacle",
       tool: "add",
@@ -88,28 +94,136 @@ describe("editable map", () => {
       groundMaterial: "grass",
       obstacleMaterial: "wood"
     });
-    const document = toggleEditablePortalPair(painted, "portal1");
+    const withPortal = toggleEditablePortalPair(painted, "portal1");
+    const document = addEditableBallPlacement(withPortal, { x: 12.5, y: 12.5 }, "18px");
+    expect(document).toBeDefined();
 
-    const encoded = encodeEditableMapDocument(document);
+    const encoded = encodeEditableMapDocument(document!);
     const decoded = decodeEditableMapDocument(encoded);
 
     expect(encoded.startsWith(`${EDITABLE_MAP_ENCODED_PREFIX}|`)).toBe(true);
     expect(encoded).not.toContain("{");
     expect(encoded).not.toContain("[");
     expect(decoded).toEqual(document);
+    expect(decoded.ballLayer).toHaveLength(1);
+  });
+
+  it("roundtrips cloud terrain and obstacle material variants", () => {
+    let document = createDefaultEditableMapDocument();
+    document = applyEditableMapBrush(document, {
+      layer: "ground",
+      tool: "add",
+      brushSize: 1,
+      cellX: 7,
+      cellY: 7,
+      groundMaterial: "cloud",
+      obstacleMaterial: "wood"
+    });
+    document = applyEditableMapBrush(document, {
+      layer: "obstacle",
+      tool: "add",
+      brushSize: 1,
+      cellX: 8,
+      cellY: 7,
+      groundMaterial: "grass",
+      obstacleMaterial: "elastic_wall"
+    });
+    document = applyEditableMapBrush(document, {
+      layer: "obstacle",
+      tool: "add",
+      brushSize: 1,
+      cellX: 9,
+      cellY: 7,
+      groundMaterial: "grass",
+      obstacleMaterial: "sticky_wall"
+    });
+    document = applyEditableMapBrush(document, {
+      layer: "obstacle",
+      tool: "add",
+      brushSize: 1,
+      cellX: 10,
+      cellY: 7,
+      groundMaterial: "grass",
+      obstacleMaterial: "airbag"
+    });
+
+    const decoded = decodeEditableMapDocument(encodeEditableMapDocument(document));
+
+    expect(decoded.groundLayer[7 + 7 * decoded.widthCells]).toEqual({
+      material: "cloud",
+      shape: 0
+    });
+    expect(decoded.obstacleLayer[8 + 7 * decoded.widthCells]?.material).toBe(
+      "elastic_wall"
+    );
+    expect(decoded.obstacleLayer[9 + 7 * decoded.widthCells]?.material).toBe(
+      "sticky_wall"
+    );
+    expect(decoded.obstacleLayer[10 + 7 * decoded.widthCells]?.material).toBe(
+      "airbag"
+    );
+  });
+
+  it("compresses noisy maps better than the previous RLE layer encoding", () => {
+    let document = resizeEditableMapDocument(createDefaultEditableMapDocument(), 64, 64);
+    for (let y = 0; y < document.heightCells; y += 1) {
+      for (let x = 0; x < document.widthCells; x += 1) {
+        if ((x + y) % 3 === 0) {
+          document = applyEditableMapBrush(document, {
+            layer: "ground",
+            tool: "add",
+            brushSize: 1,
+            cellX: x,
+            cellY: y,
+            groundMaterial: "ice",
+            obstacleMaterial: "wood"
+          });
+        }
+      }
+    }
+
+    const compressed = encodeEditableMapDocument(document);
+    const previous = encodeDaem3LikeDocument(document);
+
+    expect(compressed.length).toBeLessThan(previous.length);
+  });
+
+  it("imports previous DAEM3 RLE strings", () => {
+    const document = addEditableBallPlacement(
+      toggleEditablePortalPair(createDefaultEditableMapDocument(), "portal1"),
+      { x: 12.5, y: 12.5 },
+      "18px"
+    )!;
+    const previous = encodeDaem3LikeDocument(document);
+
+    const decoded = decodeEditableMapDocument(previous);
+
+    expect(decoded.portalLayer).toHaveLength(1);
+    expect(decoded.ballLayer).toHaveLength(1);
+    expect(encodeEditableMapDocument(decoded).startsWith(`${EDITABLE_MAP_ENCODED_PREFIX}|`)).toBe(
+      true
+    );
+  });
+
+  it("imports DAEM2 strings with an empty ball layer", () => {
+    const previous = encodeDaem2LikeDocument(toggleEditablePortalPair(createDefaultEditableMapDocument(), "portal1"));
+
+    const decoded = decodeEditableMapDocument(previous);
+
+    expect(decoded.portalLayer).toHaveLength(1);
+    expect(decoded.ballLayer).toEqual([]);
+    expect(encodeEditableMapDocument(decoded).startsWith(`${EDITABLE_MAP_ENCODED_PREFIX}|`)).toBe(
+      true
+    );
   });
 
   it("imports legacy DAEM1 strings with an empty portal layer", () => {
-    const encoded = encodeEditableMapDocument(createDefaultEditableMapDocument());
-    const parts = encoded.split("|");
-    const legacy = [
-      EDITABLE_MAP_LEGACY_ENCODED_PREFIX,
-      ...parts.slice(1, 8)
-    ].join("|");
+    const legacy = encodeDaem1LikeDocument(createDefaultEditableMapDocument());
 
     const decoded = decodeEditableMapDocument(legacy);
 
     expect(decoded.portalLayer).toEqual([]);
+    expect(decoded.ballLayer).toEqual([]);
     expect(encodeEditableMapDocument(decoded).startsWith(`${EDITABLE_MAP_ENCODED_PREFIX}|`)).toBe(
       true
     );
@@ -165,6 +279,36 @@ describe("editable map", () => {
     expect(added.portalLayer).toHaveLength(1);
     expect(added.portalLayer[0]?.id).toBe("portal2");
     expect(removed.portalLayer).toHaveLength(0);
+  });
+
+  it("adds and removes balls only at playable empty positions", () => {
+    const base = createDefaultEditableMapDocument();
+    const voidPoint = { x: 1.5, y: 1.5 };
+    const playablePoint = { x: 12.5, y: 12.5 };
+
+    expect(canPlaceEditableBall(base, voidPoint, "18px")).toBe(false);
+    expect(canPlaceEditableBall(base, playablePoint, "18px")).toBe(true);
+
+    const withBall = addEditableBallPlacement(base, playablePoint, "18px");
+    expect(withBall?.ballLayer).toHaveLength(1);
+    expect(withBall?.ballLayer[0]?.center).toEqual(playablePoint);
+    expect(withBall ? canPlaceEditableBall(withBall, playablePoint, "18px") : false).toBe(
+      false
+    );
+
+    const blocked = applyEditableMapBrush(base, {
+      layer: "obstacle",
+      tool: "add",
+      brushSize: 1,
+      cellX: 12,
+      cellY: 12,
+      groundMaterial: "grass",
+      obstacleMaterial: "wood"
+    });
+    expect(canPlaceEditableBall(blocked, playablePoint, "18px")).toBe(false);
+
+    const removed = removeEditableBallPlacement(withBall!, withBall!.ballLayer[0]!.id);
+    expect(removed.ballLayer).toHaveLength(0);
   });
 
   it("clamps portals when resizing maps", () => {
@@ -311,6 +455,43 @@ describe("editable map", () => {
     }
   });
 
+  it("assigns restitution values from obstacle materials", () => {
+    let document = createDefaultEditableMapDocument();
+    document = applyEditableMapBrush(document, {
+      layer: "obstacle",
+      tool: "add",
+      brushSize: 1,
+      cellX: 14,
+      cellY: 10,
+      groundMaterial: "grass",
+      obstacleMaterial: "elastic_wall"
+    });
+    document = applyEditableMapBrush(document, {
+      layer: "obstacle",
+      tool: "add",
+      brushSize: 1,
+      cellX: 16,
+      cellY: 10,
+      groundMaterial: "grass",
+      obstacleMaterial: "sticky_wall"
+    });
+    document = applyEditableMapBrush(document, {
+      layer: "obstacle",
+      tool: "add",
+      brushSize: 1,
+      cellX: 18,
+      cellY: 10,
+      groundMaterial: "grass",
+      obstacleMaterial: "airbag"
+    });
+
+    const colliders = editableMapToMapData(document).colliders;
+
+    expect(colliders.some((collider) => collider.material === "elastic_wall" && collider.restitution === 1.6)).toBe(true);
+    expect(colliders.some((collider) => collider.material === "sticky_wall" && collider.restitution === 0.4)).toBe(true);
+    expect(colliders.some((collider) => collider.material === "airbag" && collider.restitution === 1)).toBe(true);
+  });
+
   it("uses ground material to reduce or increase damping", () => {
     let document = createDefaultEditableMapDocument();
     document = applyEditableMapBrush(document, {
@@ -383,4 +564,113 @@ function makeBody(position: { readonly x: number; readonly y: number }): BodySta
     tags: [],
     modifiers: []
   };
+}
+
+function encodeDaem3LikeDocument(document: EditableMapDocument): string {
+  return [
+    EDITABLE_MAP_PREVIOUS_ENCODED_PREFIX,
+    encodeTextForTest(document.id),
+    encodeTextForTest(document.name),
+    toBase36ForTest(document.widthCells),
+    toBase36ForTest(document.heightCells),
+    toBase36ForTest(document.cellSize),
+    encodeRleForTest(document.groundLayer.map((cell) => `${groundCode(cell.material)}${cell.shape}`)),
+    encodeRleForTest(document.obstacleLayer.map((cell) => (cell ? `1${cell.shape}` : "00"))),
+    encodePortalLayerForTest(document),
+    encodeBallLayerForTest(document)
+  ].join("|");
+}
+
+function encodeDaem2LikeDocument(document: EditableMapDocument): string {
+  return [
+    EDITABLE_MAP_V2_ENCODED_PREFIX,
+    encodeTextForTest(document.id),
+    encodeTextForTest(document.name),
+    toBase36ForTest(document.widthCells),
+    toBase36ForTest(document.heightCells),
+    toBase36ForTest(document.cellSize),
+    encodeRleForTest(document.groundLayer.map((cell) => `${groundCode(cell.material)}${cell.shape}`)),
+    encodeRleForTest(document.obstacleLayer.map((cell) => (cell ? `1${cell.shape}` : "00"))),
+    encodePortalLayerForTest(document)
+  ].join("|");
+}
+
+function encodeDaem1LikeDocument(document: EditableMapDocument): string {
+  return [
+    EDITABLE_MAP_LEGACY_ENCODED_PREFIX,
+    encodeTextForTest(document.id),
+    encodeTextForTest(document.name),
+    toBase36ForTest(document.widthCells),
+    toBase36ForTest(document.heightCells),
+    toBase36ForTest(document.cellSize),
+    encodeRleForTest(document.groundLayer.map((cell) => `${groundCode(cell.material)}${cell.shape}`)),
+    encodeRleForTest(document.obstacleLayer.map((cell) => (cell ? `1${cell.shape}` : "00")))
+  ].join("|");
+}
+
+function encodePortalLayerForTest(document: EditableMapDocument): string {
+  if (document.portalLayer.length === 0) {
+    return "-";
+  }
+  return document.portalLayer
+    .map((pair) =>
+      [
+        pair.id === "portal1" ? "1" : "2",
+        encodeTextForTest(String(pair.lengthCells)),
+        encodeTextForTest(String(pair.a.center.x)),
+        encodeTextForTest(String(pair.a.center.y)),
+        encodeTextForTest(String(pair.a.angle)),
+        encodeTextForTest(String(pair.b.center.x)),
+        encodeTextForTest(String(pair.b.center.y)),
+        encodeTextForTest(String(pair.b.angle))
+      ].join("~")
+    )
+    .join(",");
+}
+
+function encodeBallLayerForTest(document: EditableMapDocument): string {
+  if (document.ballLayer.length === 0) {
+    return "-";
+  }
+  return document.ballLayer
+    .map((ball) =>
+      [
+        encodeTextForTest(ball.id),
+        encodeTextForTest(ball.radiusTierId),
+        encodeTextForTest(String(ball.center.x)),
+        encodeTextForTest(String(ball.center.y)),
+        encodeTextForTest(String(ball.number)),
+        encodeTextForTest(ball.outerColor ?? "")
+      ].join("~")
+    )
+    .join(",");
+}
+
+function encodeRleForTest(tokens: readonly string[]): string {
+  const runs: string[] = [];
+  let current = tokens[0] ?? "";
+  let count = 0;
+  for (const token of tokens) {
+    if (token === current) {
+      count += 1;
+      continue;
+    }
+    runs.push(`${toBase36ForTest(count)}.${current}`);
+    current = token;
+    count = 1;
+  }
+  runs.push(`${toBase36ForTest(count)}.${current}`);
+  return runs.join(",");
+}
+
+function groundCode(material: EditableMapDocument["groundLayer"][number]["material"]): string {
+  return { void: "0", grass: "1", ice: "2", sand: "3", cloud: "4" }[material];
+}
+
+function encodeTextForTest(value: string): string {
+  return encodeURIComponent(value);
+}
+
+function toBase36ForTest(value: number): string {
+  return Math.floor(value).toString(36);
 }

@@ -1,18 +1,25 @@
 import {
+  addEditableBallPlacement,
   applyEditableMapBrush,
+  canPlaceEditableBall,
   createDefaultEditableMapDocument,
   decodeEditableMapDocument,
   encodeEditableMapDocument,
   editableMapToMapData,
+  EDITABLE_BALL_RADIUS_TIER_IDS,
   EDITABLE_PORTAL_MIN_LENGTH_CELLS,
   EDITABLE_PORTAL_WIDTH_CELLS,
   EDITOR_MAP_MAX_HEIGHT_CELLS,
   EDITOR_MAP_MAX_WIDTH_CELLS,
+  pixelBodyRadius,
+  PIXEL_BODY_UNIT,
   resizeEditableMapDocument,
+  removeEditableBallPlacement,
   setEditablePortalPair,
   toggleEditablePortalPair
 } from "@disc-arena/core";
 import type {
+  EditableBallPlacement,
   EditableBrushSize,
   EditableLayer,
   EditableMapDocument,
@@ -24,6 +31,7 @@ import type {
   MapCellShape,
   MapData,
   ObstacleMaterial,
+  PixelBodyRadiusTierId,
   Vec2
 } from "@disc-arena/core";
 import { materialEdgeColor } from "./colors";
@@ -56,18 +64,17 @@ type PaintMode =
   | "idle"
   | "paint"
   | "pan"
-  | "portal_pending"
   | "portal_move"
-  | "portal_resize"
-  | "portal_rotate";
+  | "portal_resize";
 type EditorTool = EditableTool | "drag";
-type EditorMenu = "tools" | "materials" | "resize" | "special";
-type BrushMode = "1" | "2" | "4" | "rect" | "circle";
-type PortalHitPart = "body" | "head" | "tail";
+type EditorMenu = "tools" | "materials" | "resize" | "special" | "balls";
+type BrushMode = "1" | "2" | "4" | "rect" | "circle-cell" | "circle-grid";
+type RegionBrushMode = "rect" | "circle-cell" | "circle-grid";
+type PortalHitPart = "body" | "head" | "tail" | "rotate";
 
 interface PendingRegion {
-  readonly kind: "rect" | "circle";
-  readonly startCell: Vec2;
+  readonly kind: RegionBrushMode;
+  readonly start: Vec2;
 }
 
 interface GridEdge {
@@ -84,6 +91,11 @@ interface FilledLayerCell {
   readonly color: string;
 }
 
+interface LayerRenderCache {
+  readonly canvas: HTMLCanvasElement;
+  revision: number;
+}
+
 interface PortalHitTarget {
   readonly pairId: EditablePortalPairId;
   readonly endpointId: EditablePortalEndpointId;
@@ -94,25 +106,29 @@ interface PortalDragState {
   readonly target: PortalHitTarget;
   readonly startGrid: Vec2;
   lastGrid: Vec2;
-  longPressTimer?: number;
 }
 
 const DRAFT_STORAGE_KEY = "disc-arena.editable-map.draft.v1";
 const baseCellPixels = 24;
 const minZoom = 0.12;
 const maxZoom = 8;
-const portalLongPressMs = 320;
-const portalMoveThresholdCells = 0.18;
+const portalRotateButtonWidthCells = 1.15;
+const portalRotateButtonHeightCells = 0.62;
+const portalRotateButtonGapCells = 0.32;
 
 const groundColors: Record<GroundMaterial, string> = {
   void: "#303238",
   grass: "#1b5f3e",
   ice: "#9eddf2",
-  sand: "#d8bd72"
+  sand: "#d8bd72",
+  cloud: "#effbff"
 };
 
 const obstacleColors: Record<ObstacleMaterial, string> = {
-  wood: "#8f3f2f"
+  wood: "#8f3f2f",
+  elastic_wall: "#38b88b",
+  sticky_wall: "#65516f",
+  airbag: "#e3c65b"
 };
 
 const groundEdgeColors = materialColorMap(groundColors);
@@ -142,22 +158,30 @@ export function createMapEditor(
   elements: MapEditorElements
 ): MapEditorController {
   let document = loadDraft() ?? createDefaultEditableMapDocument();
+  let layerRevision = 0;
+  const layerCaches: Record<EditableLayer, LayerRenderCache> = {
+    ground: createLayerRenderCache(),
+    obstacle: createLayerRenderCache()
+  };
   let activeMenu: EditorMenu | undefined;
   let activeLayer: EditableLayer = "ground";
   let activeTool: EditorTool = "add";
   let activeBrushMode: BrushMode = "1";
+  let activeBallRadiusTierId: PixelBodyRadiusTierId = "18px";
   let activeGroundMaterial: GroundMaterial = "grass";
   let activeObstacleMaterial: ObstacleMaterial = "wood";
   let mode: PaintMode = "idle";
   let camera = { x: 80, y: 80, zoom: 1 };
   let lastPointer: Vec2 | undefined;
   let hoverCell: Vec2 | undefined;
+  let hoverGrid: Vec2 | undefined;
   let pendingRegion: PendingRegion | undefined;
   let portalDrag: PortalDragState | undefined;
   const menuButtons = queryButtons(elements.panel, "[data-editor-menu]");
   const menuPanels = queryElements(elements.panel, "[data-editor-menu-panel]");
   const toolButtons = queryButtons(elements.panel, "[data-editor-tool]");
   const brushButtons = queryButtons(elements.panel, "[data-editor-brush]");
+  const ballSizeButtons = queryButtons(elements.panel, "[data-editor-ball-size]");
   const specialPortalButtons = queryButtons(elements.panel, "[data-editor-special-portal]");
   const groundMaterialButtons = queryButtons(
     elements.panel,
@@ -193,10 +217,22 @@ export function createMapEditor(
       syncControlsFromState();
     });
   }
+  for (const button of ballSizeButtons) {
+    button.addEventListener("click", () => {
+      const radiusTierId = button.dataset.editorBallSize as PixelBodyRadiusTierId;
+      if ((EDITABLE_BALL_RADIUS_TIER_IDS as readonly string[]).includes(radiusTierId)) {
+        activeBallRadiusTierId = radiusTierId;
+      }
+      activeMenu = "balls";
+      pendingRegion = undefined;
+      syncControlsFromState();
+      updateStatus(`Ball size ${activeBallRadiusTierId}`);
+    });
+  }
   for (const button of specialPortalButtons) {
     button.addEventListener("click", () => {
       const portalPairId = button.dataset.editorSpecialPortal as EditablePortalPairId;
-      document = toggleEditablePortalPair(document, portalPairId);
+      setDocument(toggleEditablePortalPair(document, portalPairId), { layersChanged: false });
       pendingRegion = undefined;
       clearPortalDrag();
       syncControlsFromState();
@@ -221,10 +257,12 @@ export function createMapEditor(
     });
   }
   elements.resizeMap.addEventListener("click", () => {
-    document = resizeEditableMapDocument(
-      document,
-      Number(elements.width.value),
-      Number(elements.height.value)
+    setDocument(
+      resizeEditableMapDocument(
+        document,
+        Number(elements.width.value),
+        Number(elements.height.value)
+      )
     );
     syncSizeControlsFromDocument();
     updateStatus(`Resized to ${document.widthCells}x${document.heightCells}`);
@@ -264,12 +302,11 @@ export function createMapEditor(
     context.fillStyle = "#24262b";
     context.fillRect(0, 0, width, height);
 
-    drawLayer(width, height, "ground");
-    drawLayerInnerOutline("ground");
+    drawCachedLayer("ground");
     drawPortalLayer();
-    drawLayer(width, height, "obstacle");
-    drawLayerInnerOutline("obstacle");
+    drawCachedLayer("obstacle");
     drawGrid();
+    drawBallLayer();
     drawBrushPreview();
     context.restore();
   }
@@ -294,14 +331,25 @@ export function createMapEditor(
     const cell = screenToCell(screenPoint);
     const grid = screenToGrid(screenPoint);
     hoverCell = cell;
+    hoverGrid = grid;
+
+    if (activeMenu === "balls") {
+      handleBallClick(grid);
+      return;
+    }
+
     const portalHit = hitTestPortals(grid);
     if (portalHit) {
-      startPortalEdit(portalHit, grid);
+      if (portalHit.part === "rotate") {
+        promptPortalRotation(portalHit);
+      } else {
+        startPortalEdit(portalHit, grid);
+      }
       return;
     }
 
     if (isRegionBrush(activeBrushMode)) {
-      handleRegionClick(cell, activeBrushMode);
+      handleRegionClick(cell, grid, activeBrushMode);
       return;
     }
 
@@ -312,6 +360,7 @@ export function createMapEditor(
   function handlePointerMove(_event: PointerEvent, screenPoint: Vec2): void {
     hoverCell = screenToCell(screenPoint);
     const grid = screenToGrid(screenPoint);
+    hoverGrid = grid;
 
     if (mode === "pan" && lastPointer) {
       camera = {
@@ -368,14 +417,8 @@ export function createMapEditor(
     };
 
     if (target.part === "body") {
-      mode = "portal_pending";
-      portalDrag.longPressTimer = window.setTimeout(() => {
-        if (mode === "portal_pending" && portalDrag?.target === target) {
-          mode = "portal_rotate";
-          updateStatus("Rotate portal");
-        }
-      }, portalLongPressMs);
-      updateStatus("Drag to move, hold to rotate");
+      mode = "portal_move";
+      updateStatus("Drag to move portal");
       return;
     }
 
@@ -386,14 +429,6 @@ export function createMapEditor(
   function updatePortalEdit(grid: Vec2): void {
     if (!portalDrag) {
       return;
-    }
-
-    if (mode === "portal_pending") {
-      if (gridDistance(grid, portalDrag.startGrid) < portalMoveThresholdCells) {
-        return;
-      }
-      clearPortalLongPressTimer();
-      mode = "portal_move";
     }
 
     if (mode === "portal_move") {
@@ -408,10 +443,6 @@ export function createMapEditor(
       return;
     }
 
-    if (mode === "portal_rotate") {
-      rotatePortalEndpoint(portalDrag.target, grid);
-      portalDrag.lastGrid = grid;
-    }
   }
 
   function movePortalEndpoint(target: PortalHitTarget, delta: Vec2): void {
@@ -446,21 +477,31 @@ export function createMapEditor(
     }));
   }
 
-  function rotatePortalEndpoint(target: PortalHitTarget, grid: Vec2): void {
+  function promptPortalRotation(target: PortalHitTarget): void {
     const pair = findPortalPair(target.pairId);
     if (!pair) {
       return;
     }
     const endpoint = pair[target.endpointId];
-    const delta = subGrid(grid, endpoint.center);
-    if (gridDistance(delta, { x: 0, y: 0 }) < 0.001) {
+    const currentDegrees = radiansToDegrees(endpoint.angle);
+    const rawAngle = window.prompt(
+      "Portal angle in degrees. 0 = right, 90 = down.",
+      String(Math.round(currentDegrees))
+    );
+    if (rawAngle === null) {
       return;
     }
+    const degrees = Number(rawAngle.trim());
+    if (!Number.isFinite(degrees)) {
+      updateStatus("Invalid portal angle");
+      return;
+    }
+
     updatePortalPair(target.pairId, (current) => ({
       ...current,
       [target.endpointId]: {
         ...current[target.endpointId],
-        angle: Math.atan2(delta.y, delta.x)
+        angle: degreesToRadians(degrees)
       }
     }));
   }
@@ -473,7 +514,7 @@ export function createMapEditor(
     if (!pair) {
       return;
     }
-    document = setEditablePortalPair(document, updater(pair));
+    setDocument(setEditablePortalPair(document, updater(pair)), { layersChanged: false });
     syncControlsFromState();
     updateStatus(`${portalPairId} edited`);
   }
@@ -483,37 +524,56 @@ export function createMapEditor(
       return;
     }
 
-    document = applyEditableMapBrush(document, {
-      layer: activeLayer,
-      tool: editableTool(activeTool),
-      brushSize: numericBrushSize(activeBrushMode),
-      cellX: cell.x,
-      cellY: cell.y,
-      groundMaterial: activeGroundMaterial,
-      obstacleMaterial: activeObstacleMaterial
-    });
+    setDocument(
+      applyEditableMapBrush(document, {
+        layer: activeLayer,
+        tool: editableTool(activeTool),
+        brushSize: numericBrushSize(activeBrushMode),
+        cellX: cell.x,
+        cellY: cell.y,
+        groundMaterial: activeGroundMaterial,
+        obstacleMaterial: activeObstacleMaterial
+      })
+    );
     updateStatus(`${document.name} | ${document.widthCells}x${document.heightCells}`);
   }
 
-  function handleRegionClick(cell: Vec2, brushMode: "rect" | "circle"): void {
-    if (!isCellInMap(cell)) {
+  function handleRegionClick(
+    cell: Vec2,
+    grid: Vec2,
+    brushMode: RegionBrushMode
+  ): void {
+    const point = regionPointForBrush(cell, grid, brushMode);
+    if (!isRegionPointInMap(cell, point, brushMode)) {
       return;
     }
 
     if (!pendingRegion || pendingRegion.kind !== brushMode) {
-      pendingRegion = { kind: brushMode, startCell: cell };
+      pendingRegion = { kind: brushMode, start: point };
       updateStatus("Select P2, right-click to cancel");
       return;
     }
 
-    paintCells(regionCells(pendingRegion.startCell, cell, brushMode));
+    paintCells(regionCells(pendingRegion.start, point, brushMode));
     pendingRegion = undefined;
     updateStatus(`${document.name} | ${document.widthCells}x${document.heightCells}`);
   }
 
+  function isRegionPointInMap(
+    cell: Vec2,
+    point: Vec2,
+    brushMode: RegionBrushMode
+  ): boolean {
+    if (brushMode === "circle-grid") {
+      return isGridIntersectionInMap(point);
+    }
+    return isCellInMap(cell);
+  }
+
   function paintCells(cells: readonly Vec2[]): void {
+    let nextDocument = document;
     for (const cell of cells) {
-      document = applyEditableMapBrush(document, {
+      nextDocument = applyEditableMapBrush(nextDocument, {
         layer: activeLayer,
         tool: editableTool(activeTool),
         brushSize: 1,
@@ -523,64 +583,245 @@ export function createMapEditor(
         obstacleMaterial: activeObstacleMaterial
       });
     }
+    setDocument(nextDocument);
   }
 
-  function drawLayer(_width: number, _height: number, layer: EditableLayer): void {
-    const size = cellPixels();
+  function handleBallClick(grid: Vec2): void {
+    const hitBall = hitTestBall(grid);
+    if (hitBall) {
+      setDocument(removeEditableBallPlacement(document, hitBall.id), {
+        layersChanged: false
+      });
+      syncControlsFromState();
+      updateStatus(`Removed ${hitBall.id}`);
+      return;
+    }
+
+    if (!isGridPointInMap(grid)) {
+      updateStatus("Ball position is outside the map");
+      return;
+    }
+
+    const next = addEditableBallPlacement(document, grid, activeBallRadiusTierId);
+    if (!next) {
+      updateStatus("Invalid ball position");
+      return;
+    }
+
+    setDocument(next, { layersChanged: false });
+    syncControlsFromState();
+    updateStatus(`Added ball ${document.ballLayer.at(-1)?.number ?? ""}`);
+  }
+
+  function drawBallLayer(): void {
+    for (const ball of document.ballLayer) {
+      drawEditorBall(ball, { preview: false, valid: true });
+    }
+  }
+
+  function drawBallPreview(): void {
+    if (activeMenu !== "balls" || !hoverGrid || !isGridPointInMap(hoverGrid)) {
+      return;
+    }
+
+    const hitBall = hitTestBall(hoverGrid);
+    if (hitBall) {
+      drawEditorBall(hitBall, { preview: true, valid: false });
+      return;
+    }
+
+    drawEditorBall(
+      {
+        id: "preview-ball",
+        center: hoverGrid,
+        radiusTierId: activeBallRadiusTierId,
+        number: nextEditablePreviewNumber(),
+        outerColor: "#050505"
+      },
+      {
+        preview: true,
+        valid: canPlaceEditableBall(document, hoverGrid, activeBallRadiusTierId)
+      }
+    );
+  }
+
+  function drawEditorBall(
+    ball: EditableBallPlacement,
+    options: { readonly preview: boolean; readonly valid: boolean }
+  ): void {
+    const center = gridToScreen(ball.center);
+    const radius = ballRadiusCells(ball.radiusTierId) * cellPixels();
+    const innerRadius = Math.max(3, radius * 0.54);
+    const outerColor = ball.outerColor ?? "#050505";
+
+    context.save();
+    context.globalAlpha = options.preview ? 0.58 : 1;
+    context.fillStyle = outerColor;
+    context.strokeStyle = options.valid ? "#020202" : "#e85454";
+    context.lineWidth = Math.max(2, radius * 0.12);
+    context.beginPath();
+    context.arc(center.x, center.y, radius, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+
+    context.fillStyle = "#f8f8f3";
+    context.beginPath();
+    context.arc(center.x, center.y, innerRadius, 0, Math.PI * 2);
+    context.fill();
+
+    context.fillStyle = "#101010";
+    context.font = `${Math.max(9, radius * 0.64)}px ui-monospace, monospace`;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(String(ball.number), center.x, center.y + radius * 0.04);
+
+    if (options.preview && !options.valid) {
+      context.strokeStyle = "#e85454";
+      context.lineWidth = Math.max(2, radius * 0.16);
+      context.beginPath();
+      context.arc(center.x, center.y, radius + context.lineWidth, 0, Math.PI * 2);
+      context.stroke();
+    }
+    context.restore();
+  }
+
+  function hitTestBall(grid: Vec2): EditableBallPlacement | undefined {
+    for (let index = document.ballLayer.length - 1; index >= 0; index -= 1) {
+      const ball = document.ballLayer[index];
+      if (!ball) {
+        continue;
+      }
+      if (gridDistance(grid, ball.center) <= ballRadiusCells(ball.radiusTierId)) {
+        return ball;
+      }
+    }
+    return undefined;
+  }
+
+  function nextEditablePreviewNumber(): number {
+    return document.ballLayer.reduce(
+      (next, ball) => Math.max(next, ball.number + 1),
+      0
+    );
+  }
+
+  function ballRadiusCells(radiusTierId: PixelBodyRadiusTierId): number {
+    return pixelBodyRadius(radiusTierId) / document.cellSize;
+  }
+
+  function drawCachedLayer(layer: EditableLayer): void {
+    const cache = layerCaches[layer];
+    if (cache.revision !== layerRevision) {
+      rebuildLayerCache(layer, cache);
+    }
+
+    context.drawImage(
+      cache.canvas,
+      camera.x,
+      camera.y,
+      document.widthCells * cellPixels(),
+      document.heightCells * cellPixels()
+    );
+  }
+
+  function rebuildLayerCache(layer: EditableLayer, cache: LayerRenderCache): void {
+    const canvasWidth = Math.max(1, document.widthCells * baseCellPixels);
+    const canvasHeight = Math.max(1, document.heightCells * baseCellPixels);
+    if (cache.canvas.width !== canvasWidth) {
+      cache.canvas.width = canvasWidth;
+    }
+    if (cache.canvas.height !== canvasHeight) {
+      cache.canvas.height = canvasHeight;
+    }
+
+    const target = requiredCanvasContext(cache.canvas);
+    target.save();
+    target.imageSmoothingEnabled = false;
+    target.clearRect(0, 0, canvasWidth, canvasHeight);
+    drawLayerToContext(target, layer, baseCellPixels);
+    drawLayerInnerOutlineToContext(target, layer, baseCellPixels);
+    target.restore();
+    cache.revision = layerRevision;
+  }
+
+  function drawLayerToContext(
+    target: CanvasRenderingContext2D,
+    layer: EditableLayer,
+    size: number
+  ): void {
     for (let y = 0; y < document.heightCells; y += 1) {
       for (let x = 0; x < document.widthCells; x += 1) {
-        const screen = cellToScreen(x, y);
+        const screen = { x: x * size, y: y * size };
         if (layer === "ground") {
           const cell = document.groundLayer[cellIndex(x, y)];
           if (cell) {
-            fillCellShape(screen.x, screen.y, size, cell.shape, groundColors[cell.material]);
+            fillCellShapeOnContext(
+              target,
+              screen.x,
+              screen.y,
+              size,
+              cell.shape,
+              groundColors[cell.material]
+            );
           }
         } else {
           const cell = document.obstacleLayer[cellIndex(x, y)];
           if (cell) {
-            fillCellShape(screen.x, screen.y, size, cell.shape, obstacleColors[cell.material]);
+            fillCellShapeOnContext(
+              target,
+              screen.x,
+              screen.y,
+              size,
+              cell.shape,
+              obstacleColors[cell.material]
+            );
           }
         }
       }
     }
   }
 
-  function drawLayerInnerOutline(layer: EditableLayer): void {
+  function drawLayerInnerOutlineToContext(
+    target: CanvasRenderingContext2D,
+    layer: EditableLayer,
+    size: number
+  ): void {
     const edges = layerBoundaryEdges(layer);
     if (edges.length === 0) {
       return;
     }
 
-    context.save();
-    context.beginPath();
-    addLayerClipPath(layer);
-    context.clip();
-    context.lineWidth = Math.max(2, Math.round(cellPixels() * 0.14));
-    context.lineJoin = "miter";
-    context.lineCap = "butt";
+    target.save();
+    target.beginPath();
+    addLayerClipPathToContext(target, layer, size);
+    target.clip();
+    target.lineWidth = Math.max(2, Math.round(size * 0.14));
+    target.lineJoin = "miter";
+    target.lineCap = "butt";
 
     for (const edge of edges) {
-      const start = gridToScreen(edge.start);
-      const end = gridToScreen(edge.end);
-      context.strokeStyle = edge.color;
-      context.beginPath();
-      context.moveTo(start.x, start.y);
-      context.lineTo(end.x, end.y);
-      context.stroke();
+      target.strokeStyle = edge.color;
+      target.beginPath();
+      target.moveTo(edge.start.x * size, edge.start.y * size);
+      target.lineTo(edge.end.x * size, edge.end.y * size);
+      target.stroke();
     }
-    context.restore();
+    target.restore();
   }
 
-  function addLayerClipPath(layer: EditableLayer): void {
+  function addLayerClipPathToContext(
+    target: CanvasRenderingContext2D,
+    layer: EditableLayer,
+    size: number
+  ): void {
     for (let y = 0; y < document.heightCells; y += 1) {
       for (let x = 0; x < document.widthCells; x += 1) {
         const cell = filledLayerCell(layer, x, y);
         if (!cell) {
           continue;
         }
-        const screen = cellToScreen(x, y);
-        addCellShapePath(screen.x, screen.y, cellPixels(), cell.shape);
-        context.closePath();
+        addCellShapePathOnContext(target, x * size, y * size, size, cell.shape);
+        target.closePath();
       }
     }
   }
@@ -688,6 +929,37 @@ export function createMapEditor(
     context.stroke();
 
     drawPortalDirectionArrow(size);
+    drawPortalRotateButton(size);
+    context.restore();
+  }
+
+  function drawPortalRotateButton(size: number): void {
+    const rect = portalRotateButtonRect();
+    context.save();
+    context.fillStyle = "rgba(12, 27, 20, 0.9)";
+    context.strokeStyle = "rgba(255,255,255,0.9)";
+    context.lineWidth = Math.max(1.2, size * 0.045);
+    context.fillRect(
+      rect.left * size,
+      rect.top * size,
+      rect.width * size,
+      rect.height * size
+    );
+    context.strokeRect(
+      rect.left * size,
+      rect.top * size,
+      rect.width * size,
+      rect.height * size
+    );
+    context.fillStyle = "#fff";
+    context.font = `${Math.max(9, size * 0.34)}px ui-monospace, monospace`;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(
+      "R",
+      (rect.left + rect.width / 2) * size,
+      (rect.top + rect.height / 2) * size
+    );
     context.restore();
   }
 
@@ -743,6 +1015,16 @@ export function createMapEditor(
     const radius = EDITABLE_PORTAL_WIDTH_CELLS / 2;
     const headDistance = Math.hypot(local.x + halfLength, local.y);
     const tailDistance = Math.hypot(local.x - halfLength, local.y);
+    const rotateRect = portalRotateButtonRect();
+
+    if (
+      local.x >= rotateRect.left &&
+      local.x <= rotateRect.left + rotateRect.width &&
+      local.y >= rotateRect.top &&
+      local.y <= rotateRect.top + rotateRect.height
+    ) {
+      return { pairId: pair.id, endpointId, part: "rotate" };
+    }
 
     if (headDistance <= radius + 0.14) {
       return { pairId: pair.id, endpointId, part: "head" };
@@ -757,6 +1039,24 @@ export function createMapEditor(
       return { pairId: pair.id, endpointId, part: "body" };
     }
     return undefined;
+  }
+
+  function portalRotateButtonRect(): {
+    readonly left: number;
+    readonly top: number;
+    readonly width: number;
+    readonly height: number;
+  } {
+    const top =
+      -EDITABLE_PORTAL_WIDTH_CELLS / 2 -
+      portalRotateButtonGapCells -
+      portalRotateButtonHeightCells;
+    return {
+      left: -portalRotateButtonWidthCells / 2,
+      top,
+      width: portalRotateButtonWidthCells,
+      height: portalRotateButtonHeightCells
+    };
   }
 
   function portalLocalPoint(
@@ -799,16 +1099,30 @@ export function createMapEditor(
   }
 
   function drawBrushPreview(): void {
-    if (!hoverCell || !isCellInMap(hoverCell)) {
+    if (activeMenu === "balls") {
+      drawBallPreview();
       return;
     }
 
     if (pendingRegion) {
       if (pendingRegion.kind === "rect") {
-        drawRectPreview(pendingRegion.startCell, hoverCell);
+        if (hoverCell && isCellInMap(hoverCell)) {
+          drawRectPreview(pendingRegion.start, hoverCell);
+        }
+      } else if (pendingRegion.kind === "circle-cell") {
+        if (hoverCell && isCellInMap(hoverCell)) {
+          drawCirclePreview(pendingRegion.start, cellCenterGridPoint(hoverCell));
+        }
       } else {
-        drawCirclePreview(pendingRegion.startCell, hoverCell);
+        const end = snapGridIntersection(hoverGrid ?? pendingRegion.start);
+        if (isGridIntersectionInMap(end)) {
+          drawCirclePreview(pendingRegion.start, end);
+        }
       }
+      return;
+    }
+
+    if (!hoverCell || !isCellInMap(hoverCell)) {
       return;
     }
 
@@ -849,8 +1163,8 @@ export function createMapEditor(
   }
 
   function drawCirclePreview(start: Vec2, end: Vec2): void {
-    const center = cellCenterToScreen(start);
-    const edge = cellCenterToScreen(end);
+    const center = gridToScreen(start);
+    const edge = gridToScreen(end);
     const radius = Math.hypot(edge.x - center.x, edge.y - center.y);
     drawDashedPreviewPath(() => {
       context.arc(center.x, center.y, radius, 0, Math.PI * 2);
@@ -875,40 +1189,61 @@ export function createMapEditor(
     shape: MapCellShape,
     color: string
   ): void {
-    context.beginPath();
-    addCellShapePath(x, y, size, shape);
-    context.closePath();
-    context.fillStyle = color;
-    context.fill();
+    fillCellShapeOnContext(context, x, y, size, shape, color);
+  }
+
+  function fillCellShapeOnContext(
+    target: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    size: number,
+    shape: MapCellShape,
+    color: string
+  ): void {
+    target.beginPath();
+    addCellShapePathOnContext(target, x, y, size, shape);
+    target.closePath();
+    target.fillStyle = color;
+    target.fill();
   }
 
   function addCellShapePath(x: number, y: number, size: number, shape: MapCellShape): void {
+    addCellShapePathOnContext(context, x, y, size, shape);
+  }
+
+  function addCellShapePathOnContext(
+    target: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    size: number,
+    shape: MapCellShape
+  ): void {
     if (shape === 1) {
-      context.moveTo(x, y);
-      context.lineTo(x + size, y);
-      context.lineTo(x, y + size);
+      target.moveTo(x, y);
+      target.lineTo(x + size, y);
+      target.lineTo(x, y + size);
       return;
     }
     if (shape === 2) {
-      context.moveTo(x, y);
-      context.lineTo(x + size, y);
-      context.lineTo(x + size, y + size);
+      target.moveTo(x, y);
+      target.lineTo(x + size, y);
+      target.lineTo(x + size, y + size);
       return;
     }
     if (shape === 3) {
-      context.moveTo(x + size, y);
-      context.lineTo(x + size, y + size);
-      context.lineTo(x, y + size);
+      target.moveTo(x + size, y);
+      target.lineTo(x + size, y + size);
+      target.lineTo(x, y + size);
       return;
     }
     if (shape === 4) {
-      context.moveTo(x, y);
-      context.lineTo(x + size, y + size);
-      context.lineTo(x, y + size);
+      target.moveTo(x, y);
+      target.lineTo(x + size, y + size);
+      target.lineTo(x, y + size);
       return;
     }
 
-    context.rect(x, y, size, size);
+    target.rect(x, y, size, size);
   }
 
   async function importSelectedFile(input: HTMLInputElement): Promise<void> {
@@ -920,7 +1255,7 @@ export function createMapEditor(
 
     try {
       const imported = decodeEditableMapDocument(await file.text());
-      document = imported;
+      setDocument(imported);
       syncSizeControlsFromDocument();
       updateStatus("Imported code");
     } catch (error) {
@@ -934,6 +1269,10 @@ export function createMapEditor(
     syncButtonGroup(
       brushButtons,
       (button) => button.dataset.editorBrush === activeBrushMode
+    );
+    syncButtonGroup(
+      ballSizeButtons,
+      (button) => button.dataset.editorBallSize === activeBallRadiusTierId
     );
     syncButtonGroup(
       specialPortalButtons,
@@ -967,6 +1306,16 @@ export function createMapEditor(
     elements.status.textContent = text;
   }
 
+  function setDocument(
+    nextDocument: EditableMapDocument,
+    options: { readonly layersChanged?: boolean } = {}
+  ): void {
+    document = nextDocument;
+    if (options.layersChanged !== false) {
+      layerRevision += 1;
+    }
+  }
+
   function findPortalPair(
     portalPairId: EditablePortalPairId
   ): EditablePortalPair | undefined {
@@ -974,15 +1323,7 @@ export function createMapEditor(
   }
 
   function clearPortalDrag(): void {
-    clearPortalLongPressTimer();
     portalDrag = undefined;
-  }
-
-  function clearPortalLongPressTimer(): void {
-    if (portalDrag?.longPressTimer !== undefined) {
-      window.clearTimeout(portalDrag.longPressTimer);
-      delete portalDrag.longPressTimer;
-    }
   }
 
   function cellPixels(): number {
@@ -1002,14 +1343,6 @@ export function createMapEditor(
     return {
       x: camera.x + x * size,
       y: camera.y + y * size
-    };
-  }
-
-  function cellCenterToScreen(cell: Vec2): Vec2 {
-    const size = cellPixels();
-    return {
-      x: camera.x + (cell.x + 0.5) * size,
-      y: camera.y + (cell.y + 0.5) * size
     };
   }
 
@@ -1038,11 +1371,29 @@ export function createMapEditor(
     );
   }
 
+  function isGridPointInMap(point: Vec2): boolean {
+    return (
+      point.x >= 0 &&
+      point.y >= 0 &&
+      point.x < document.widthCells &&
+      point.y < document.heightCells
+    );
+  }
+
+  function isGridIntersectionInMap(point: Vec2): boolean {
+    return (
+      point.x >= 0 &&
+      point.y >= 0 &&
+      point.x <= document.widthCells &&
+      point.y <= document.heightCells
+    );
+  }
+
   function cellIndex(x: number, y: number): number {
     return y * document.widthCells + x;
   }
 
-  function regionCells(start: Vec2, end: Vec2, kind: "rect" | "circle"): Vec2[] {
+  function regionCells(start: Vec2, end: Vec2, kind: RegionBrushMode): Vec2[] {
     return kind === "rect" ? rectCells(start, end) : circleCells(start, end);
   }
 
@@ -1067,12 +1418,12 @@ export function createMapEditor(
     const radius = Math.hypot(end.x - start.x, end.y - start.y);
     const left = Math.floor(start.x - radius);
     const top = Math.floor(start.y - radius);
-    const right = Math.ceil(start.x + radius);
-    const bottom = Math.ceil(start.y + radius);
+    const right = Math.ceil(start.x + radius) - 1;
+    const bottom = Math.ceil(start.y + radius) - 1;
     for (let y = top; y <= bottom; y += 1) {
       for (let x = left; x <= right; x += 1) {
         const cell = { x, y };
-        const distanceToCenter = Math.hypot(x - start.x, y - start.y);
+        const distanceToCenter = Math.hypot(x + 0.5 - start.x, y + 0.5 - start.y);
         if (isCellInMap(cell) && distanceToCenter <= radius + 0.0001) {
           cells.push(cell);
         }
@@ -1082,16 +1433,18 @@ export function createMapEditor(
   }
 }
 
-function isRegionBrush(brushMode: BrushMode): brushMode is "rect" | "circle" {
-  return brushMode === "rect" || brushMode === "circle";
+function isRegionBrush(brushMode: BrushMode): brushMode is RegionBrushMode {
+  return (
+    brushMode === "rect" ||
+    brushMode === "circle-cell" ||
+    brushMode === "circle-grid"
+  );
 }
 
 function isPortalEditMode(mode: PaintMode): boolean {
   return (
-    mode === "portal_pending" ||
     mode === "portal_move" ||
-    mode === "portal_resize" ||
-    mode === "portal_rotate"
+    mode === "portal_resize"
   );
 }
 
@@ -1122,6 +1475,38 @@ function dotGrid(a: Vec2, b: Vec2): number {
 
 function gridDistance(a: Vec2, b: Vec2): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function radiansToDegrees(radians: number): number {
+  return (radians * 180) / Math.PI;
+}
+
+function degreesToRadians(degrees: number): number {
+  return (degrees * Math.PI) / 180;
+}
+
+function snapGridIntersection(point: Vec2): Vec2 {
+  return {
+    x: Math.round(point.x),
+    y: Math.round(point.y)
+  };
+}
+
+function cellCenterGridPoint(cell: Vec2): Vec2 {
+  return {
+    x: cell.x + 0.5,
+    y: cell.y + 0.5
+  };
+}
+
+function regionPointForBrush(cell: Vec2, grid: Vec2, brushMode: RegionBrushMode): Vec2 {
+  if (brushMode === "rect") {
+    return cell;
+  }
+  if (brushMode === "circle-cell") {
+    return cellCenterGridPoint(cell);
+  }
+  return snapGridIntersection(grid);
 }
 
 function numericBrushSize(brushMode: BrushMode): EditableBrushSize {
@@ -1180,6 +1565,21 @@ function materialColorMap<TMaterial extends string>(
     materialEdgeColor(color as string)
   ]);
   return Object.fromEntries(entries) as Record<TMaterial, string>;
+}
+
+function createLayerRenderCache(): LayerRenderCache {
+  return {
+    canvas: document.createElement("canvas"),
+    revision: -1
+  };
+}
+
+function requiredCanvasContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Canvas 2D context is unavailable");
+  }
+  return context;
 }
 
 function queryButtons(root: HTMLElement, selector: string): HTMLButtonElement[] {

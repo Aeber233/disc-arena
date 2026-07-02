@@ -1,10 +1,19 @@
 import type { BodyState } from "../types/body";
 import type { GameState } from "../types/game";
-import type { EditableGroundCell, EditableMapDocument, EditableObstacleCell } from "./editableMap";
-import { EDITABLE_MAP_VERSION, EDITOR_MAP_CELL_SIZE, editableMapToMapData } from "./editableMap";
+import type {
+  EditableBallPlacement,
+  EditableGroundCell,
+  EditableMapDocument,
+  EditableObstacleCell
+} from "./editableMap";
+import {
+  EDITABLE_MAP_VERSION,
+  EDITOR_MAP_CELL_SIZE,
+  editableBallPlacementsToBodies,
+  editableMapToMapData
+} from "./editableMap";
 import type { MapData } from "../types/map";
-import { PHYSICS_UNIT_SCALE } from "../physics/units";
-import { pixelBodyRadius, type PixelBodyRadiusTierId } from "./pixelBodySizes";
+import type { PixelBodyRadiusTierId } from "./pixelBodySizes";
 
 export const BILLIARDS_MAP_ID = "billiards_table";
 export const BILLIARDS_MAP_WIDTH_CELLS = 48;
@@ -19,9 +28,8 @@ const pocketRadiusCells = 1.15;
 const pocketVoidRadiusCells = 1.45;
 const pocketWoodClearRadiusCells = 1.9;
 const ballRadiusTier: PixelBodyRadiusTierId = "18px";
-const ballRadius = pixelBodyRadius(ballRadiusTier);
-const rackSpacing = ballRadius * 2.5;
-const rackColumnSpacing = rackSpacing * 1.05;
+const rackSpacingCells = 1.15;
+const rackColumnSpacingCells = 1.2;
 
 const pockets = [
   { id: "corner-top-left", x: grassLeft, y: grassTop },
@@ -84,6 +92,7 @@ export function createBilliardsEditableMapDocument(): EditableMapDocument {
     cellSize: BILLIARDS_CELL_SIZE,
     groundLayer,
     portalLayer: [],
+    ballLayer: createBilliardsBallPlacements(),
     obstacleLayer
   };
 }
@@ -103,61 +112,50 @@ export function createBilliardsGameState(): GameState {
 }
 
 function createBilliardsBodies(): BodyState[] {
-  const bodies: BodyState[] = [
-    createBall("ball-0", 0, "#f8f8f3", { x: 12.5, y: 14 })
+  return editableBallPlacementsToBodies(billiardsEditableMapDocument, {
+    ownerPlayerId: "player",
+    teamId: "white"
+  });
+}
+
+function createBilliardsBallPlacements(): EditableBallPlacement[] {
+  const balls: EditableBallPlacement[] = [
+    createBallPlacement("ball-0", 0, "#f8f8f3", { x: 12.5, y: 14 })
   ];
   const rackStart = { x: 31.4, y: 14 };
   let number = 1;
 
   for (let column = 0; column < 4; column += 1) {
     const count = column + 1;
-    const x = rackStart.x * BILLIARDS_CELL_SIZE + column * rackColumnSpacing;
-    const startY = rackStart.y * BILLIARDS_CELL_SIZE - ((count - 1) * rackSpacing) / 2;
+    const x = rackStart.x + column * rackColumnSpacingCells;
+    const startY = rackStart.y - ((count - 1) * rackSpacingCells) / 2;
 
     for (let row = 0; row < count; row += 1) {
-      bodies.push(
-        createBall(`ball-${number}`, number, "#050505", {
+      balls.push(
+        createBallPlacement(`ball-${number}`, number, "#050505", {
           x,
-          y: startY + row * rackSpacing
+          y: startY + row * rackSpacingCells
         })
       );
       number += 1;
     }
   }
 
-  return bodies;
+  return balls;
 }
 
-function createBall(
+function createBallPlacement(
   id: string,
   number: number,
   outerColor: string,
   position: { readonly x: number; readonly y: number }
-): BodyState {
-  const worldPosition =
-    position.x > BILLIARDS_MAP_WIDTH_CELLS
-      ? position
-      : {
-          x: position.x * BILLIARDS_CELL_SIZE,
-          y: position.y * BILLIARDS_CELL_SIZE
-        };
-
+): EditableBallPlacement {
   return {
     id,
-    kind: "disc",
-    ownerPlayerId: "player",
-    teamId: "white",
-    position: worldPosition,
-    velocity: { x: 0, y: 0 },
-    radius: ballRadius,
-    mass: PHYSICS_UNIT_SCALE,
-    damping: 1.18,
-    spin: 0,
-    spinControl: 1,
-    alive: true,
-    sleep: true,
-    tags: [`number:${number}`, `outerColor:${outerColor}`],
-    modifiers: []
+    center: { ...position },
+    radiusTierId: ballRadiusTier,
+    number,
+    outerColor
   };
 }
 

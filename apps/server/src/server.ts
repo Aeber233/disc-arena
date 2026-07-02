@@ -4,41 +4,65 @@ import type {
   ClientToServerEvents,
   ServerToClientEvents
 } from "@disc-arena/core";
-import { PublicTestMapRoom } from "./room";
+import { RoomManager } from "./roomManager";
 
 const port = Number(process.env.PORT ?? 3000);
-const clientOrigin = process.env.CLIENT_ORIGIN ?? "http://127.0.0.1:5173";
-const room = new PublicTestMapRoom();
+const clientOrigins = (process.env.CLIENT_ORIGIN ?? "http://127.0.0.1:5173,http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 const httpServer = createServer();
 
 const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
   cors: {
-    origin: clientOrigin
+    origin: clientOrigins
   }
 });
+const roomManager = new RoomManager(io);
 
 io.on("connection", (socket) => {
-  const joined = room.join(socket.id);
-  socket.emit("room:joined", joined);
-  io.emit("room:state", room.snapshot());
+  socket.on("room:create", (payload) => {
+    roomManager.handleCreate(socket, payload);
+  });
 
-  socket.on("shot:submit", (payload) => {
-    const result = room.submitShot(socket.id, payload);
-    if (!result.ok) {
-      socket.emit("shot:rejected", result.rejected);
-      return;
-    }
+  socket.on("room:join", (payload) => {
+    roomManager.handleJoin(socket, payload);
+  });
 
-    io.emit("shot:started", result.started);
-    io.emit("shot:resolved", result.resolved);
+  socket.on("room:leave", () => {
+    roomManager.handleLeave(socket);
+  });
+
+  socket.on("room:kick", (payload) => {
+    roomManager.handleKick(socket, payload);
+  });
+
+  socket.on("room:import_map", (payload) => {
+    roomManager.handleImportMap(socket, payload);
+  });
+
+  socket.on("room:add_bot", (payload) => {
+    roomManager.handleAddBot(socket, payload);
+  });
+
+  socket.on("room:update_shrink_circle", (payload) => {
+    roomManager.handleUpdateShrinkCircle(socket, payload);
+  });
+
+  socket.on("room:start", () => {
+    roomManager.handleStart(socket);
   });
 
   socket.on("room:reset", () => {
-    io.emit("room:state", room.reset());
+    roomManager.handleReset(socket);
+  });
+
+  socket.on("shot:submit", (payload) => {
+    roomManager.handleSubmitShot(socket, payload);
   });
 
   socket.on("disconnect", () => {
-    io.emit("room:state", room.leave(socket.id));
+    roomManager.handleDisconnect(socket);
   });
 });
 

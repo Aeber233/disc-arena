@@ -4,6 +4,7 @@ import type { MapData } from "../types/map";
 import type { BodyProxy } from "../types/portal";
 import type { SimulationEvent, SimulationOptions } from "../types/simulation";
 import { add, length, scale, sub } from "../math/vec2";
+import { dissipateCloudTerrain, popAirbagsFromCollisions } from "../map/dynamicMaterials";
 import { terrainDampingMultiplierAtPoint } from "../map/editableMap";
 import { solveCollisions } from "./collisions/solveCollisions";
 import { commitPortalTransitions } from "./portals/commitPortalTransitions";
@@ -41,6 +42,7 @@ export function stepWorld(
   applySpinCurve(state.bodies, options.fixedDt);
   integrateVelocity(state.bodies, options.fixedDt);
   integratePosition(state.bodies, options.fixedDt);
+  events.push(...dissipateCloudTerrain(mapData, state.bodies, previousPositions, step));
 
   const proxies = buildBodyProxies(state.bodies, mapData);
   const proxySnapshots = snapshotProxies(proxies);
@@ -53,6 +55,7 @@ export function stepWorld(
     step
   );
   events.push(...collisionResult.events);
+  events.push(...popAirbagsFromCollisions(mapData, state.bodies, collisionResult.events, step));
 
   mapProxyImpulsesBackToBodies(collisionResult.proxies, state.bodies, proxySnapshots);
   events.push(...resolveTriggers(state.bodies, mapData, options.fixedDt, step));

@@ -1,73 +1,73 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Disc Arena Physics Test</title>
+    <title>Disc Arena 弹球竞技场</title>
     <script type="module" src="/src/main.ts"></script>
   </head>
   <body>
-    <canvas id="game" aria-label="Disc Arena physics test"></canvas>
+    <canvas id="game" aria-label="Disc Arena 弹球竞技场画布"></canvas>
     <div id="main-menu">
       <div class="menu-shell">
-        <h1>Disc Arena</h1>
+        <h1>Disc Arena 弹球竞技场</h1>
         <div class="menu-actions">
-          <input id="player-name" type="text" maxlength="24" placeholder="Name" aria-label="Player name" />
-          <button id="room-create" type="button">Create Room</button>
+          <input id="player-name" type="text" maxlength="24" placeholder="玩家名称" aria-label="玩家名称" />
+          <button id="room-create" type="button">创建房间</button>
           <div class="menu-join-row">
-            <input id="room-code" type="text" maxlength="4" placeholder="Room" aria-label="Room code" />
-            <button id="room-join" type="button">Join Room</button>
+            <input id="room-code" type="text" maxlength="4" placeholder="房间号" aria-label="四位房间号" />
+            <button id="room-join" type="button">加入房间</button>
           </div>
-          <button id="menu-editor" type="button">Map Editor</button>
+          <button id="menu-editor" type="button">地图编辑器</button>
           <div id="menu-status" class="menu-status" aria-live="polite"></div>
         </div>
       </div>
     </div>
     <div id="play-panel">
-      <button id="play-menu" type="button">Menu</button>
+      <button id="play-menu" type="button">菜单</button>
       <section id="hud" class="play-card" aria-live="polite">
         <button class="play-card-title" data-collapse-panel="hud" type="button">
-          <span>Status</span>
-          <span id="hud-summary">No room</span>
+          <span>状态</span>
+          <span id="hud-summary">未加入</span>
         </button>
         <div id="hud-body" class="play-card-body"></div>
       </section>
       <section id="bonus-panel" class="bonus-panel play-card" hidden>
         <button class="play-card-title" data-collapse-panel="bonus" type="button">
-          <span>Bonus</span>
-          <span id="bonus-summary">No choices</span>
+          <span>道具</span>
+          <span id="bonus-summary">暂无选择</span>
         </button>
         <div id="bonus-body" class="play-card-body"></div>
       </section>
       <section id="room-panel" class="room-panel play-card">
         <button class="play-card-title" data-collapse-panel="room" type="button">
-          <span>Room</span>
-          <span id="room-summary">Not joined</span>
+          <span>房间</span>
+          <span id="room-summary">未加入</span>
         </button>
         <div id="room-body" class="play-card-body">
           <div class="room-row room-actions">
-            <button id="room-start" type="button">Start</button>
-            <button id="reset" type="button">Reset</button>
-            <button id="room-import" type="button">Import Map</button>
-            <button id="room-add-bot" type="button">Add Bot</button>
-            <button id="room-leave" type="button">Leave</button>
+            <button id="room-start" type="button">开始</button>
+            <button id="reset" type="button">重置</button>
+            <button id="room-import" type="button">导入地图</button>
+            <button id="room-add-bot" type="button">添加 AI</button>
+            <button id="room-leave" type="button">离开</button>
           </div>
           <div class="room-row room-map-controls">
-            <label for="room-official-map">Map</label>
+            <label for="room-official-map">地图</label>
             <select id="room-official-map"></select>
-            <button id="room-use-map" type="button">Use Map</button>
+            <button id="room-use-map" type="button">使用地图</button>
           </div>
           <div id="room-map-description" class="room-map-description"></div>
           <div class="room-row room-shrink-controls">
             <label>
               <input id="room-shrink-enabled" type="checkbox" />
-              Shrink
+              <span id="room-shrink-label">缩圈</span>
             </label>
             <label>
               x
               <input id="room-shrink-rounds" type="number" min="1" max="99" value="10" />
             </label>
-            <button id="room-shrink-apply" type="button">Apply</button>
+            <button id="room-shrink-apply" type="button">应用</button>
           </div>
           <input id="room-import-file" type="file" accept=".damap,text/plain" hidden />
           <div id="room-status" class="room-status" aria-live="polite"></div>
@@ -77,77 +77,77 @@
     </div>
     <div id="editor-panel" hidden>
       <div class="editor-tabs">
-        <button id="editor-menu" type="button">Menu</button>
-        <button data-editor-menu="tools" type="button">Tools</button>
-        <button data-editor-menu="materials" type="button">Materials</button>
-        <button data-editor-menu="special" type="button">Special</button>
-        <button data-editor-menu="balls" type="button">Balls</button>
-        <button data-editor-menu="resize" type="button">Resize</button>
+        <button id="editor-menu" type="button">菜单</button>
+        <button data-editor-menu="tools" type="button">工具</button>
+        <button data-editor-menu="materials" type="button">材质</button>
+        <button data-editor-menu="special" type="button">特殊</button>
+        <button data-editor-menu="balls" type="button">球体</button>
+        <button data-editor-menu="resize" type="button">尺寸</button>
       </div>
       <div class="editor-menu-panel" data-editor-menu-panel="tools" hidden>
         <div class="editor-row">
-          <button data-editor-tool="add" type="button">Add</button>
-          <button data-editor-tool="remove" type="button">Remove</button>
-          <button data-editor-tool="shape" type="button">Shape</button>
-          <button data-editor-tool="drag" type="button">Drag</button>
+          <button data-editor-tool="add" type="button">添加</button>
+          <button data-editor-tool="remove" type="button">移除</button>
+          <button data-editor-tool="shape" type="button">形状</button>
+          <button data-editor-tool="drag" type="button">拖拽</button>
         </div>
         <div class="editor-row">
           <button data-editor-brush="1" type="button">1x1</button>
           <button data-editor-brush="2" type="button">2x2</button>
           <button data-editor-brush="4" type="button">4x4</button>
-          <button data-editor-brush="rect" type="button">Rectangle</button>
-          <button data-editor-brush="circle-cell" type="button">Circle Cell</button>
-          <button data-editor-brush="circle-grid" type="button">Circle Grid</button>
+          <button data-editor-brush="rect" type="button">矩形</button>
+          <button data-editor-brush="circle-cell" type="button">格内圆</button>
+          <button data-editor-brush="circle-grid" type="button">网格圆</button>
         </div>
       </div>
       <div class="editor-menu-panel" data-editor-menu-panel="materials" hidden>
         <div class="editor-row">
-          <span class="editor-label">Ground</span>
-          <button data-editor-ground-material="void" type="button">Void</button>
-          <button data-editor-ground-material="grass" type="button">Grass</button>
-          <button data-editor-ground-material="ice" type="button">Ice</button>
-          <button data-editor-ground-material="sand" type="button">Sand</button>
-          <button data-editor-ground-material="cloud" type="button">Cloud</button>
+          <span id="editor-ground-label" class="editor-label">地面</span>
+          <button data-editor-ground-material="void" type="button">空洞</button>
+          <button data-editor-ground-material="grass" type="button">草地</button>
+          <button data-editor-ground-material="ice" type="button">冰面</button>
+          <button data-editor-ground-material="sand" type="button">沙地</button>
+          <button data-editor-ground-material="cloud" type="button">云层</button>
         </div>
         <div class="editor-row">
-          <span class="editor-label">Obstacle</span>
-          <button data-editor-obstacle-material="wood" type="button">Wood</button>
-          <button data-editor-obstacle-material="elastic_wall" type="button">Elastic</button>
-          <button data-editor-obstacle-material="sticky_wall" type="button">Sticky</button>
-          <button data-editor-obstacle-material="airbag" type="button">Airbag</button>
+          <span id="editor-obstacle-label" class="editor-label">障碍</span>
+          <button data-editor-obstacle-material="wood" type="button">木墙</button>
+          <button data-editor-obstacle-material="elastic_wall" type="button">弹性墙</button>
+          <button data-editor-obstacle-material="sticky_wall" type="button">粘性墙</button>
+          <button data-editor-obstacle-material="airbag" type="button">气囊</button>
         </div>
       </div>
       <div class="editor-menu-panel" data-editor-menu-panel="special" hidden>
         <div class="editor-row">
-          <span class="editor-label">Portals</span>
-          <button data-editor-special-portal="portal1" type="button">Portal 1</button>
-          <button data-editor-special-portal="portal2" type="button">Portal 2</button>
+          <span id="editor-portals-label" class="editor-label">传送门</span>
+          <button data-editor-special-portal="portal1" type="button">传送门 1</button>
+          <button data-editor-special-portal="portal2" type="button">传送门 2</button>
         </div>
       </div>
       <div class="editor-menu-panel" data-editor-menu-panel="balls" hidden>
         <div class="editor-row editor-ball-sizes">
-          <span class="editor-label">Size</span>
-          <button data-editor-ball-size="10px" type="button" aria-label="10 pixel ball"><span style="--ball-preview-size: 10px"></span></button>
-          <button data-editor-ball-size="14px" type="button" aria-label="14 pixel ball"><span style="--ball-preview-size: 14px"></span></button>
-          <button data-editor-ball-size="18px" type="button" aria-label="18 pixel ball"><span style="--ball-preview-size: 18px"></span></button>
-          <button data-editor-ball-size="22px" type="button" aria-label="22 pixel ball"><span style="--ball-preview-size: 22px"></span></button>
-          <button data-editor-ball-size="26px" type="button" aria-label="26 pixel ball"><span style="--ball-preview-size: 26px"></span></button>
-          <button data-editor-ball-size="32px" type="button" aria-label="32 pixel ball"><span style="--ball-preview-size: 32px"></span></button>
+          <span id="editor-ball-size-label" class="editor-label">球尺寸</span>
+          <button data-editor-ball-size="10px" type="button" aria-label="10px 小球"><span style="--ball-preview-size: 10px"></span></button>
+          <button data-editor-ball-size="14px" type="button" aria-label="14px 小球"><span style="--ball-preview-size: 14px"></span></button>
+          <button data-editor-ball-size="18px" type="button" aria-label="18px 小球"><span style="--ball-preview-size: 18px"></span></button>
+          <button data-editor-ball-size="22px" type="button" aria-label="22px 小球"><span style="--ball-preview-size: 22px"></span></button>
+          <button data-editor-ball-size="26px" type="button" aria-label="26px 小球"><span style="--ball-preview-size: 26px"></span></button>
+          <button data-editor-ball-size="32px" type="button" aria-label="32px 小球"><span style="--ball-preview-size: 32px"></span></button>
         </div>
       </div>
       <div class="editor-menu-panel" data-editor-menu-panel="resize" hidden>
         <div class="editor-row">
-          <span class="editor-label">Length</span>
-          <input id="editor-height" type="number" min="1" max="128" value="28" aria-label="Map length" />
-          <span class="editor-label">Width</span>
-          <input id="editor-width" type="number" min="1" max="128" value="48" aria-label="Map width" />
-          <button id="editor-resize" type="button">Done</button>
+          <span id="editor-length-label" class="editor-label">长度</span>
+          <input id="editor-height" type="number" min="1" max="128" value="28" aria-label="地图长度" />
+          <span id="editor-width-label" class="editor-label">宽度</span>
+          <input id="editor-width" type="number" min="1" max="128" value="48" aria-label="地图宽度" />
+          <button id="editor-resize" type="button">完成</button>
         </div>
       </div>
       <div class="editor-row editor-map-actions">
-      <button id="editor-save-draft" type="button">Save Draft</button>
-      <button id="editor-export" type="button">Export</button>
-      <button id="editor-import" type="button">Import</button>
+      <button id="editor-save-draft" type="button">保存草稿</button>
+      <button id="editor-export" type="button">导出</button>
+      <button id="editor-import" type="button">导入</button>
       <input id="editor-import-file" type="file" accept=".damap,text/plain" hidden />
       <span id="editor-status" aria-live="polite"></span>
       </div>

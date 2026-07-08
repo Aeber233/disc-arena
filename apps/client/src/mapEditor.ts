@@ -35,6 +35,7 @@ import type {
   Vec2
 } from "@disc-arena/core";
 import { materialEdgeColor } from "./colors";
+import { uiText } from "./uiText";
 
 interface MapEditorElements {
   readonly panel: HTMLElement;
@@ -193,7 +194,7 @@ export function createMapEditor(
   );
 
   syncControlsFromState();
-  updateStatus("Ready");
+  updateStatus(uiText.editor.status.ready);
 
   for (const button of menuButtons) {
     button.addEventListener("click", () => {
@@ -226,7 +227,7 @@ export function createMapEditor(
       activeMenu = "balls";
       pendingRegion = undefined;
       syncControlsFromState();
-      updateStatus(`Ball size ${activeBallRadiusTierId}`);
+      updateStatus(uiText.editor.status.ballSize(activeBallRadiusTierId));
     });
   }
   for (const button of specialPortalButtons) {
@@ -237,7 +238,7 @@ export function createMapEditor(
       clearPortalDrag();
       syncControlsFromState();
       const exists = document.portalLayer.some((pair) => pair.id === portalPairId);
-      updateStatus(`${portalPairId} ${exists ? "added" : "removed"}`);
+      updateStatus(uiText.editor.status.portalToggled(portalPairId, exists));
     });
   }
   for (const button of groundMaterialButtons) {
@@ -265,15 +266,15 @@ export function createMapEditor(
       )
     );
     syncSizeControlsFromDocument();
-    updateStatus(`Resized to ${document.widthCells}x${document.heightCells}`);
+    updateStatus(uiText.editor.status.resized(document.widthCells, document.heightCells));
   });
   elements.saveDraft.addEventListener("click", () => {
     saveDraft(document);
-    updateStatus("Draft saved");
+    updateStatus(uiText.editor.status.draftSaved);
   });
   elements.exportMap.addEventListener("click", () => {
     exportDocument(document);
-    updateStatus("Exported code");
+    updateStatus(uiText.editor.status.exported);
   });
   elements.importMap.addEventListener("click", () => {
     elements.importFile.click();
@@ -314,7 +315,7 @@ export function createMapEditor(
   function handlePointerDown(event: PointerEvent, screenPoint: Vec2): void {
     if (event.button === 2 && pendingRegion) {
       pendingRegion = undefined;
-      updateStatus("Shape draw cancelled");
+      updateStatus(uiText.editor.status.shapeCancelled);
       return;
     }
 
@@ -418,12 +419,12 @@ export function createMapEditor(
 
     if (target.part === "body") {
       mode = "portal_move";
-      updateStatus("Drag to move portal");
+      updateStatus(uiText.editor.status.dragPortal);
       return;
     }
 
     mode = "portal_resize";
-    updateStatus("Drag portal end to resize pair");
+    updateStatus(uiText.editor.status.resizePortal);
   }
 
   function updatePortalEdit(grid: Vec2): void {
@@ -485,7 +486,7 @@ export function createMapEditor(
     const endpoint = pair[target.endpointId];
     const currentDegrees = radiansToDegrees(endpoint.angle);
     const rawAngle = window.prompt(
-      "Portal angle in degrees. 0 = right, 90 = down.",
+      uiText.editor.prompt.portalAngle,
       String(Math.round(currentDegrees))
     );
     if (rawAngle === null) {
@@ -493,7 +494,7 @@ export function createMapEditor(
     }
     const degrees = Number(rawAngle.trim());
     if (!Number.isFinite(degrees)) {
-      updateStatus("Invalid portal angle");
+      updateStatus(uiText.editor.status.invalidPortalAngle);
       return;
     }
 
@@ -516,7 +517,7 @@ export function createMapEditor(
     }
     setDocument(setEditablePortalPair(document, updater(pair)), { layersChanged: false });
     syncControlsFromState();
-    updateStatus(`${portalPairId} edited`);
+    updateStatus(uiText.editor.status.portalEdited(portalPairId));
   }
 
   function paintAt(cell: Vec2): void {
@@ -535,7 +536,7 @@ export function createMapEditor(
         obstacleMaterial: activeObstacleMaterial
       })
     );
-    updateStatus(`${document.name} | ${document.widthCells}x${document.heightCells}`);
+    updateStatus(uiText.editor.status.mapSize(document.name, document.widthCells, document.heightCells));
   }
 
   function handleRegionClick(
@@ -550,13 +551,13 @@ export function createMapEditor(
 
     if (!pendingRegion || pendingRegion.kind !== brushMode) {
       pendingRegion = { kind: brushMode, start: point };
-      updateStatus("Select P2, right-click to cancel");
+      updateStatus(uiText.editor.status.selectSecondPoint);
       return;
     }
 
     paintCells(regionCells(pendingRegion.start, point, brushMode));
     pendingRegion = undefined;
-    updateStatus(`${document.name} | ${document.widthCells}x${document.heightCells}`);
+    updateStatus(uiText.editor.status.mapSize(document.name, document.widthCells, document.heightCells));
   }
 
   function isRegionPointInMap(
@@ -593,24 +594,24 @@ export function createMapEditor(
         layersChanged: false
       });
       syncControlsFromState();
-      updateStatus(`Removed ${hitBall.id}`);
+      updateStatus(uiText.editor.status.removedBall(hitBall.id));
       return;
     }
 
     if (!isGridPointInMap(grid)) {
-      updateStatus("Ball position is outside the map");
+      updateStatus(uiText.editor.status.ballOutside);
       return;
     }
 
     const next = addEditableBallPlacement(document, grid, activeBallRadiusTierId);
     if (!next) {
-      updateStatus("Invalid ball position");
+      updateStatus(uiText.editor.status.invalidBall);
       return;
     }
 
     setDocument(next, { layersChanged: false });
     syncControlsFromState();
-    updateStatus(`Added ball ${document.ballLayer.at(-1)?.number ?? ""}`);
+    updateStatus(uiText.editor.status.addedBall(document.ballLayer.at(-1)?.number ?? ""));
   }
 
   function drawBallLayer(): void {
@@ -1257,9 +1258,9 @@ export function createMapEditor(
       const imported = decodeEditableMapDocument(await file.text());
       setDocument(imported);
       syncSizeControlsFromDocument();
-      updateStatus("Imported code");
+      updateStatus(uiText.editor.status.imported);
     } catch (error) {
-      updateStatus(error instanceof Error ? error.message : "Import failed");
+      updateStatus(error instanceof Error ? error.message : uiText.editor.status.importFailed);
     }
   }
 

@@ -1,5 +1,4 @@
 import {
-  actionKindLabel,
   add,
   allBodiesSleeping,
   billiardsMapData,
@@ -51,6 +50,7 @@ import type {
 import { io, type Socket } from "socket.io-client";
 import { materialEdgeColor } from "./colors";
 import { createMapEditor } from "./mapEditor";
+import { actionBonusLabel, officialMapText, roomErrorText, uiText } from "./uiText";
 import "./styles.css";
 
 const canvas = requiredElement<HTMLCanvasElement>("#game");
@@ -88,6 +88,7 @@ const playMenuButton = requiredElement<HTMLButtonElement>("#play-menu");
 const editorMenuButton = requiredElement<HTMLButtonElement>("#editor-menu");
 const editorPanel = requiredElement<HTMLDivElement>("#editor-panel");
 const context = requiredCanvasContext(canvas);
+applyStaticText();
 const editor = createMapEditor(canvas, context, {
   panel: editorPanel,
   status: requiredElement<HTMLElement>("#editor-status"),
@@ -169,7 +170,7 @@ const defaultShrinkCircleState: ShrinkCircleState = {
 for (const summary of OFFICIAL_MAP_SUMMARIES) {
   const option = document.createElement("option");
   option.value = summary.id;
-  option.textContent = summary.name;
+  option.textContent = officialMapText(summary).name;
   roomOfficialMapSelect.append(option);
 }
 type AppMode = "menu" | "play" | "editor";
@@ -254,8 +255,8 @@ let authoritativePlayback: AuthoritativePlayback | undefined;
 let pendingRoomState: RoomStatePayload | undefined;
 const pendingResolvedShots: ShotResolvedPayload[] = [];
 let awaitingShotId: string | undefined;
-let connectionState = "connecting";
-let roomMessage = "Create or join a room.";
+let connectionState: string = uiText.hud.connection.connecting;
+let roomMessage: string = uiText.room.createOrJoin;
 let hudCollapsed = false;
 let bonusCollapsed = false;
 let roomCollapsed = false;
@@ -281,7 +282,7 @@ roomCreateButton.addEventListener("click", () => {
     setAppMode("play");
     return;
   }
-  roomMessage = "Creating room...";
+  roomMessage = uiText.room.creating;
   const playerName = playerNameInput.value.trim();
   socket.emit("room:create", {
     ...(playerName ? { playerName } : {})
@@ -297,11 +298,11 @@ roomJoinButton.addEventListener("click", () => {
   }
   const code = normalizeRoomCode(roomCodeInput.value);
   if (!code) {
-    roomMessage = "Enter a four digit room code.";
+    roomMessage = uiText.room.enterCode;
     renderRoomPanel();
     return;
   }
-  roomMessage = `Joining ${code}...`;
+  roomMessage = uiText.room.joining(code);
   const playerName = playerNameInput.value.trim();
   const rejoinToken = rejoinTokenForRoom(code);
   socket.emit("room:join", {
@@ -333,7 +334,7 @@ roomUseMapButton.addEventListener("click", () => {
   if (!isOfficialMapOption(selectedOfficialMapId)) {
     return;
   }
-  roomMessage = "Selecting map...";
+  roomMessage = uiText.room.selectingMap;
   renderRoomPanel();
   socket.emit("room:select_official_map", { mapId: selectedOfficialMapId });
 });
@@ -377,7 +378,7 @@ roomMembers.addEventListener("click", (event) => {
   if (!playerId) {
     return;
   }
-  roomMessage = "Updating room...";
+  roomMessage = uiText.room.updating;
   renderRoomPanel();
   socket.emit("room:kick", { playerId });
 });
@@ -400,7 +401,7 @@ bonusBody.addEventListener("click", (event) => {
     return;
   }
   bonusResolving = true;
-  bonusMessage = "Resolving...";
+  bonusMessage = uiText.bonus.resolving;
   invalidateBonusPanel();
   renderBonusPanel();
   socket.emit("bonus:resolve", {
@@ -435,19 +436,19 @@ playMenuButton.addEventListener("click", () => setAppMode("menu"));
 editorMenuButton.addEventListener("click", () => setAppMode("menu"));
 
 socket.on("connect", () => {
-  connectionState = "connected";
+  connectionState = uiText.hud.connection.connected;
   renderRoomPanel();
 });
 
 socket.on("disconnect", () => {
-  connectionState = "disconnected";
+  connectionState = uiText.hud.connection.disconnected;
   renderRoomPanel();
 });
 
 socket.on("room:joined", (payload) => {
   ignoredRoomId = null;
   localPlayerId = payload.playerId;
-  roomMessage = `Joined room ${payload.roomId ?? ""}.`;
+  roomMessage = uiText.room.joined(payload.roomId ?? "");
   if (payload.roomId) {
     roomCodeInput.value = payload.roomId;
     saveRejoinToken(payload.roomId, payload.rejoinToken);
@@ -504,6 +505,79 @@ canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 resizeCanvas();
 setAppMode("menu");
 requestAnimationFrame(tick);
+
+function applyStaticText(): void {
+  document.documentElement.lang = "zh-CN";
+  document.title = uiText.app.title;
+  canvas.setAttribute("aria-label", uiText.app.canvasLabel);
+  setText(".menu-shell h1", uiText.menu.heading);
+  playerNameInput.placeholder = uiText.menu.playerNamePlaceholder;
+  playerNameInput.setAttribute("aria-label", uiText.menu.playerNameAria);
+  roomCodeInput.placeholder = uiText.menu.roomCodePlaceholder;
+  roomCodeInput.setAttribute("aria-label", uiText.menu.roomCodeAria);
+  roomCreateButton.textContent = uiText.menu.createRoom;
+  roomJoinButton.textContent = uiText.menu.joinRoom;
+  menuEditorButton.textContent = uiText.menu.mapEditor;
+  playMenuButton.textContent = uiText.play.menu;
+  setText('[data-collapse-panel="hud"] span:first-child', uiText.play.status);
+  hudSummary.textContent = uiText.play.noRoom;
+  setText('[data-collapse-panel="bonus"] span:first-child', uiText.play.bonus);
+  bonusSummary.textContent = uiText.play.noChoices;
+  setText('[data-collapse-panel="room"] span:first-child', uiText.play.room);
+  roomSummary.textContent = uiText.play.notJoined;
+  roomStartButton.textContent = uiText.play.start;
+  resetButton.textContent = uiText.play.reset;
+  roomImportButton.textContent = uiText.play.importMap;
+  roomAddBotButton.textContent = uiText.play.addBot;
+  roomLeaveButton.textContent = uiText.play.leave;
+  setText('label[for="room-official-map"]', uiText.play.map);
+  roomUseMapButton.textContent = uiText.play.useMap;
+  setText("#room-shrink-label", uiText.play.shrink);
+  roomShrinkApplyButton.textContent = uiText.play.apply;
+
+  editorMenuButton.textContent = uiText.editor.tabs.menu;
+  setText('[data-editor-menu="tools"]', uiText.editor.tabs.tools);
+  setText('[data-editor-menu="materials"]', uiText.editor.tabs.materials);
+  setText('[data-editor-menu="special"]', uiText.editor.tabs.special);
+  setText('[data-editor-menu="balls"]', uiText.editor.tabs.balls);
+  setText('[data-editor-menu="resize"]', uiText.editor.tabs.resize);
+  setText('[data-editor-tool="add"]', uiText.editor.tools.add);
+  setText('[data-editor-tool="remove"]', uiText.editor.tools.remove);
+  setText('[data-editor-tool="shape"]', uiText.editor.tools.shape);
+  setText('[data-editor-tool="drag"]', uiText.editor.tools.drag);
+  setText('[data-editor-brush="rect"]', uiText.editor.brushes.rect);
+  setText('[data-editor-brush="circle-cell"]', uiText.editor.brushes.circleCell);
+  setText('[data-editor-brush="circle-grid"]', uiText.editor.brushes.circleGrid);
+  setText("#editor-ground-label", uiText.editor.materials.ground);
+  setText('[data-editor-ground-material="void"]', uiText.editor.materials.void);
+  setText('[data-editor-ground-material="grass"]', uiText.editor.materials.grass);
+  setText('[data-editor-ground-material="ice"]', uiText.editor.materials.ice);
+  setText('[data-editor-ground-material="sand"]', uiText.editor.materials.sand);
+  setText('[data-editor-ground-material="cloud"]', uiText.editor.materials.cloud);
+  setText("#editor-obstacle-label", uiText.editor.materials.obstacle);
+  setText('[data-editor-obstacle-material="wood"]', uiText.editor.materials.wood);
+  setText('[data-editor-obstacle-material="elastic_wall"]', uiText.editor.materials.elastic_wall);
+  setText('[data-editor-obstacle-material="sticky_wall"]', uiText.editor.materials.sticky_wall);
+  setText('[data-editor-obstacle-material="airbag"]', uiText.editor.materials.airbag);
+  setText("#editor-portals-label", uiText.editor.special.portals);
+  setText('[data-editor-special-portal="portal1"]', uiText.editor.special.portal1);
+  setText('[data-editor-special-portal="portal2"]', uiText.editor.special.portal2);
+  setText("#editor-ball-size-label", uiText.editor.balls.size);
+  for (const button of editorPanel.querySelectorAll<HTMLButtonElement>("[data-editor-ball-size]")) {
+    const size = button.dataset.editorBallSize ?? "";
+    button.setAttribute("aria-label", uiText.editor.balls.aria(size));
+  }
+  setText("#editor-length-label", uiText.editor.resize.length);
+  setText("#editor-width-label", uiText.editor.resize.width);
+  requiredElement<HTMLInputElement>("#editor-height")
+    .setAttribute("aria-label", uiText.editor.resize.lengthAria);
+  requiredElement<HTMLInputElement>("#editor-width")
+    .setAttribute("aria-label", uiText.editor.resize.widthAria);
+  setText("#editor-resize", uiText.editor.resize.done);
+  setText("#editor-save-draft", uiText.editor.actions.saveDraft);
+  setText("#editor-export", uiText.editor.actions.export);
+  setText("#editor-import", uiText.editor.actions.import);
+}
 
 function tick(now: number): void {
   const frameDt = Math.min(0.05, (now - lastTime) / 1000);
@@ -586,16 +660,16 @@ function handleTeleportPointerDown(screenPoint: Vec2): void {
     return;
   }
   if (!selectedBodyId) {
-    roomMessage = "Select one of your balls to teleport.";
+    roomMessage = uiText.targeting.selectTeleportBall;
     renderRoomPanel();
     return;
   }
   if (!isBodyTeleportTargetLegal(gameState, currentMapData, selectedBodyId, worldPoint)) {
-    roomMessage = "That teleport spot is not legal.";
+    roomMessage = uiText.targeting.illegalTeleport;
     renderRoomPanel();
     return;
   }
-  roomMessage = "Teleporting...";
+  roomMessage = uiText.targeting.teleporting;
   renderRoomPanel();
   socket.emit("bonus:teleport", {
     knownStateHash: stateHash,
@@ -611,11 +685,11 @@ function handleAnchorPointerDown(screenPoint: Vec2): void {
   const worldPoint = screenToWorld(screenPoint);
   const picked = pickBodyProxy(worldPoint, bodyProxiesForRender(), gameState.bodies);
   if (!picked?.body.alive) {
-    roomMessage = "Select a ball to anchor.";
+    roomMessage = uiText.targeting.selectAnchorBall;
     renderRoomPanel();
     return;
   }
-  roomMessage = "Anchoring...";
+  roomMessage = uiText.targeting.anchoring;
   renderRoomPanel();
   socket.emit("bonus:anchor", {
     knownStateHash: stateHash,
@@ -2125,7 +2199,7 @@ function updateHud(): void {
   renderBonusPanel();
   if (!roomId) {
     hudSummary.textContent = connectionState;
-    hudBody.textContent = "Create or join a room";
+    hudBody.textContent = uiText.room.createOrJoinHud;
     return;
   }
 
@@ -2135,17 +2209,28 @@ function updateHud(): void {
   const stateText = hudStateText();
   const shrinkDisplay = visualShrinkCircle.enabled ? visualShrinkCircle : shrinkCircle;
   const shrinkText = shrinkCircle.enabled
-    ? ` | Shrink ${Math.round(shrinkDisplay.progress * 100)}%`
+    ? uiText.hud.shrink(Math.round(shrinkDisplay.progress * 100))
     : "";
   const actionText = gameState.activeActionConstraint
-    ? ` | Mode ${actionKindLabel(gameState.activeActionConstraint.kind)}`
+    ? uiText.hud.mode(actionBonusLabel(gameState.activeActionConstraint.kind))
     : "";
   const powerText = localPlayerId
-    ? ` | Power ${Math.round(currentShotPowerLimit() / PHYSICS_POWER_SCALE)}`
+    ? uiText.hud.power(Math.round(currentShotPowerLimit() / PHYSICS_POWER_SCALE))
     : "";
 
-  hudSummary.textContent = `${stateText} | Round ${currentRoundNumber()} | Action ${gameState.turnIndex + 1}`;
-  hudBody.textContent = `Room ${roomId} | ${connectionState} | You ${me} | Active ${activePlayer} | Balls ${aliveCount}${powerText}${actionText}${shrinkText}`;
+  hudSummary.textContent = uiText.hud.roundAction(
+    stateText,
+    currentRoundNumber(),
+    gameState.turnIndex + 1
+  );
+  hudBody.textContent = uiText.hud.body(
+    roomId,
+    connectionState,
+    me,
+    activePlayer,
+    aliveCount,
+    [powerText, actionText, shrinkText]
+  );
 }
 
 function currentRoundNumber(): number {
@@ -2159,18 +2244,20 @@ function currentRoundNumber(): number {
 
 function hudStateText(): string {
   if (authoritativePlayback) {
-    return "Playback";
+    return uiText.hud.state.playback;
   }
   if (awaitingShotId) {
-    return "Resolving";
+    return uiText.hud.state.resolving;
   }
   if (gameState.phase === "finished") {
-    return `Winner ${winnerPlayerId ? playerLabel(winnerPlayerId) : "-"}`;
+    return uiText.hud.state.winner(winnerPlayerId ? playerLabel(winnerPlayerId) : "-");
   }
   if (gameState.phase === "waiting_for_shot") {
-    return canShoot() ? "Your turn" : "Waiting";
+    return canShoot() ? uiText.hud.state.yourTurn : uiText.hud.state.waiting;
   }
-  return allBodiesSleeping(gameState.bodies) ? "Settled" : "Rolling";
+  return allBodiesSleeping(gameState.bodies)
+    ? uiText.hud.state.settled
+    : uiText.hud.state.rolling;
 }
 
 function renderBonusPanel(): void {
@@ -2193,16 +2280,16 @@ function renderBonusPanel(): void {
   bonusPanel.hidden = !showPanel;
   if (!showPanel) {
     bonusBody.replaceChildren();
-    bonusSummary.textContent = "No choices";
+    bonusSummary.textContent = uiText.bonus.noChoices;
     renderCollapsiblePanels();
     return;
   }
 
   bonusSummary.textContent = bonusResolving
-    ? "Resolving..."
+    ? uiText.bonus.resolving
     : options.length > 0
-      ? `${options.length} choice${options.length === 1 ? "" : "s"}`
-      : "Keep or wait";
+      ? uiText.bonus.count(options.length)
+      : uiText.bonus.keepOrWait;
   const optionButtons = options.map((option) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -2219,7 +2306,7 @@ function renderBonusPanel(): void {
   keep.dataset.bonusAction = "keep";
   keep.disabled =
     !buttonsEnabled || (options.length === 0 && gameState.phase !== "choosing_bonus");
-  keep.textContent = "Keep";
+  keep.textContent = uiText.bonus.keep;
   const wrapper = document.createElement("div");
   wrapper.className = "bonus-options";
   const children: HTMLElement[] = [...optionButtons, keep];
@@ -2264,34 +2351,7 @@ function clearBonusInteractionState(): void {
 }
 
 function bonusLabel(kind: BonusKind): string {
-  switch (kind) {
-    case "power_stack":
-      return "Power cap +600";
-    case "trajectory_preview":
-      return "Long trajectory preview";
-    case "single_power_boost":
-      return "Next shot power +1000";
-    case "mass_up":
-      return "Source ball mass up, same size";
-    case "size_up":
-      return "Source ball bigger";
-    case "size_down":
-      return "Source ball smaller";
-    case "extra_action_any":
-      return "Extra action";
-    case "shuriken":
-      return "Shuriken action";
-    case "bomb":
-      return "Bomb action";
-    case "summon_half_ball":
-      return "Launch new half ball";
-    case "teleport":
-      return "Teleport action";
-    case "anchor":
-      return "Anchor a ball";
-    case "extra_action_on_elimination":
-      return "Extra action on ring-out";
-  }
+  return uiText.bonus.labels[kind];
 }
 
 function applyRoomState(payload: RoomStatePayload): void {
@@ -2684,8 +2744,8 @@ function renderRoomPanel(): void {
     activeMemberCount >= 2;
   const canEditLobby = inRoom && isOwner && roomPhase === "lobby";
 
-  roomCreateButton.textContent = inRoom ? "Current Room" : "Create Room";
-  roomJoinButton.textContent = inRoom ? "Return to Room" : "Join Room";
+  roomCreateButton.textContent = inRoom ? uiText.menu.currentRoom : uiText.menu.createRoom;
+  roomJoinButton.textContent = inRoom ? uiText.menu.returnToRoom : uiText.menu.joinRoom;
   roomCreateButton.disabled = !socket.connected && !inRoom;
   roomJoinButton.disabled = !socket.connected && !inRoom;
   roomCodeInput.disabled = inRoom;
@@ -2729,11 +2789,11 @@ function renderRoomMember(player: RoomMember, localIsOwner: boolean): HTMLElemen
   const name = document.createElement("span");
   name.className = "room-member-name";
   const badges = [
-    player.kind === "bot" ? "Bot" : "",
-    player.isOwner ? "Host" : "",
-    player.playerId === localPlayerId ? "You" : "",
-    player.connected || player.kind === "bot" ? "" : "Offline",
-    player.eliminated ? "Out" : ""
+    player.kind === "bot" ? uiText.room.badges.bot : "",
+    player.isOwner ? uiText.room.badges.host : "",
+    player.playerId === localPlayerId ? uiText.room.badges.you : "",
+    player.connected || player.kind === "bot" ? "" : uiText.room.badges.offline,
+    player.eliminated ? uiText.room.badges.out : ""
   ].filter(Boolean);
   name.textContent = `${player.name}${badges.length ? ` (${badges.join(", ")})` : ""}`;
 
@@ -2747,10 +2807,12 @@ function renderRoomMember(player: RoomMember, localIsOwner: boolean): HTMLElemen
     const kick = document.createElement("button");
     kick.type = "button";
     kick.dataset.kickPlayer = player.playerId;
-    kick.textContent = "Kick";
+    kick.textContent = uiText.room.kick;
     meta.append(kick);
   } else {
-    meta.textContent = roomPhase === "lobby" ? `P${player.joinIndex}` : `${player.ballCount} balls`;
+    meta.textContent = roomPhase === "lobby"
+      ? uiText.room.playerSlot(player.joinIndex)
+      : uiText.room.ballCount(player.ballCount);
   }
 
   row.append(color, name, meta);
@@ -2759,33 +2821,36 @@ function renderRoomMember(player: RoomMember, localIsOwner: boolean): HTMLElemen
 
 function roomStatusText(): string {
   if (!socket.connected) {
-    return "Disconnected from server.";
+    return uiText.room.disconnected;
   }
   if (!roomId) {
     return roomMessage;
   }
   if (roomPhase === "lobby") {
     const readyCount = players.filter((player) => player.connected || player.kind === "bot").length;
-    return `Room ${roomId} | Lobby | ${readyCount}/6 players | ${roomMessage}`;
+    return uiText.room.lobbyStatus(roomId, readyCount, roomMessage);
   }
   if (roomPhase === "finished") {
-    return `Room ${roomId} | Winner: ${winnerPlayerId ? playerLabel(winnerPlayerId) : "-"}`;
+    return uiText.room.finishedStatus(
+      roomId,
+      winnerPlayerId ? playerLabel(winnerPlayerId) : "-"
+    );
   }
-  return `Room ${roomId} | Playing | ${roomMessage}`;
+  return uiText.room.playingStatus(roomId, roomMessage);
 }
 
 function roomSummaryText(): string {
   if (!roomId) {
-    return "Not joined";
+    return uiText.play.notJoined;
   }
   const activePlayer = gameState.currentPlayerId ? playerLabel(gameState.currentPlayerId) : "-";
   if (roomPhase === "lobby") {
-    return `${roomId} | Lobby | ${players.length}/6`;
+    return uiText.room.lobbySummary(roomId, players.length);
   }
   if (roomPhase === "finished") {
-    return `${roomId} | Winner ${winnerPlayerId ? playerLabel(winnerPlayerId) : "-"}`;
+    return uiText.room.winnerSummary(roomId, winnerPlayerId ? playerLabel(winnerPlayerId) : "-");
   }
-  return `${roomId} | ${activePlayer}`;
+  return uiText.room.activeSummary(roomId, activePlayer);
 }
 
 function syncOfficialMapSelect(): void {
@@ -2800,13 +2865,14 @@ function syncOfficialMapSelect(): void {
   const selectedSummary =
     OFFICIAL_MAP_SUMMARIES.find((summary) => summary.id === selectedOfficialMapId);
   if (selectedSummary) {
+    const mapText = officialMapText(selectedSummary);
     roomMapDescription.textContent =
       selectedSummary.id === currentMapData.id
-        ? selectedSummary.description
-        : `Ready to switch to ${selectedSummary.name}.`;
+        ? mapText.description
+        : uiText.room.readyToSwitchMap(mapText.name);
     return;
   }
-  roomMapDescription.textContent = `Current custom map: ${currentMapData.id}`;
+  roomMapDescription.textContent = uiText.room.currentCustomMap(currentMapData.id);
 }
 
 function isOfficialMapOption(mapId: string): boolean {
@@ -2827,13 +2893,13 @@ function setCustomMapOptionVisible(visible: boolean): void {
   }
   if (existing) {
     existing.value = currentMapData.id;
-    existing.textContent = `Custom: ${currentMapData.id}`;
+    existing.textContent = uiText.room.customMapOption(currentMapData.id);
     return;
   }
   const option = document.createElement("option");
   option.dataset.customMap = "true";
   option.value = currentMapData.id;
-  option.textContent = `Custom: ${currentMapData.id}`;
+  option.textContent = uiText.room.customMapOption(currentMapData.id);
   roomOfficialMapSelect.prepend(option);
 }
 
@@ -2850,26 +2916,26 @@ async function importRoomMap(input: HTMLInputElement): Promise<void> {
     return;
   }
   if (!roomId) {
-    roomMessage = "Join a room before importing a map.";
+    roomMessage = uiText.room.importNeedRoom;
     renderRoomPanel();
     return;
   }
 
   try {
     const encodedMap = await file.text();
-    roomMessage = "Importing map...";
+    roomMessage = uiText.room.importingMap;
     socket.emit("room:import_map", { encodedMap });
   } catch {
-    roomMessage = "Could not read map file.";
+    roomMessage = uiText.room.importReadFailed;
   }
   renderRoomPanel();
 }
 
 function handleRoomError(payload: RoomErrorPayload): void {
-  roomMessage = payload.message ?? payload.reason;
+  roomMessage = roomErrorText(payload);
   bonusResolving = false;
   if (isBonusResolveError(payload.reason)) {
-    bonusMessage = payload.message ?? payload.reason;
+    bonusMessage = roomErrorText(payload);
   }
   invalidateBonusPanel();
   if (payload.reason === "kicked") {
@@ -2906,7 +2972,7 @@ function clearRoomState(): void {
   players = [];
   setShrinkCircle(defaultShrinkCircleState, false);
   shrinkCircleControlsDirty = false;
-  roomMessage = "Create or join a room.";
+  roomMessage = uiText.room.createOrJoin;
   currentMapData = billiardsMapData;
   selectedOfficialMapId = billiardsMapData.id;
   const nextState = createBilliardsGameState();
@@ -3140,6 +3206,13 @@ function requiredElement<TElement extends Element>(selector: string): TElement {
     throw new Error(`Missing required element: ${selector}`);
   }
   return element;
+}
+
+function setText(selector: string, text: string): void {
+  const element = document.querySelector<HTMLElement>(selector);
+  if (element) {
+    element.textContent = text;
+  }
 }
 
 function requiredCanvasContext(

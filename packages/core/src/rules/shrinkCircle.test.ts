@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import { billiardsMapData } from "../map/billiardsMap";
 import type { BodyState } from "../types/body";
 import {
+  DEFAULT_SHRINK_CIRCLE_SETTINGS,
   isBodyFullyCoveredByPoison,
   normalizeShrinkCircleSettings,
   shrinkCircleStateForTurn
 } from "./shrinkCircle";
 
 describe("shrink circle", () => {
+  it("defaults to a ten-round collapse speed", () => {
+    expect(DEFAULT_SHRINK_CIRCLE_SETTINGS.collapseRounds).toBe(10);
+  });
+
   it("starts after one full turn order round and collapses after configured rounds", () => {
     const before = shrinkCircleStateForTurn(
       billiardsMapData,

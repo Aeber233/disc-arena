@@ -1,25 +1,50 @@
 import {
   allBodiesSleeping,
-  billiardsMapData,
+  actionConstraintAllowsBody,
+  applyAnchorModifier,
+  applyBombExplosion,
+  applyPendingActionBonusesAfterShot,
+  bonusOptionCount,
+  clearAnchorModifiersForPlayer,
   countAliveOwnedBodies,
-  createBilliardsGameState,
+  collectPickups,
+  createActionProjectile,
+  createOfficialMapSetup,
+  createPendingBonusChoice,
+  clearActiveActionConstraint,
+  consumeShotStartBonuses,
+  continueSimulation,
+  destroyTemporaryBody,
   decodeEditableMapDocument,
   DEFAULT_SHRINK_CIRCLE_SETTINGS,
   DEFAULT_PLAYER_COLORS,
   editableBallPlacementsToBodies,
   editableMapToMapData,
+  eventsIncludeElimination,
+  getPlayerBonusState,
   hashGameState,
+  initializePickupState,
+  isBodyTeleportTargetLegal,
   isBodyFullyCoveredByPoison,
   isBodyOwnedByPlayer,
-  nextTurnPlayerId,
+  keepBonusOptions,
   normalizeShrinkCircleSettings,
+  playerHasBonusOptions,
+  resolveBonusOption,
   setupMatchGameState,
   settleMatchState,
+  shotPowerLimitForPlayer,
   shrinkCircleStateForTurn,
-  simulateShot
+  spawnPickupForTurn,
+  simulateShot,
+  takeNextUsableActionToken,
+  teleportBody
 } from "@disc-arena/core";
 import type {
   BodyState,
+  BonusResolvePayload,
+  BonusAnchorPayload,
+  BonusTeleportPayload,
   GameState,
   MapData,
   RoomErrorPayload,
@@ -50,6 +75,10 @@ export interface RejectedShot {
 }
 
 export type ShotSubmissionResult = AcceptedShot | RejectedShot;
+
+export interface DiscArenaRoomOptions {
+  readonly simulationOptions?: SimulationOptions;
+}
 
 export interface RoomJoinOptions {
   readonly socketId: string;
@@ -94,25 +123,33 @@ const authoritativeSimulationOptions: SimulationOptions = {
   quantize: true
 };
 
+const defaultOfficialMapSetup = createOfficialMapSetup("billiards_table");
+
 /**
  * Owns lobby membership plus one authoritative Disc Arena match.
  */
 export class DiscArenaRoom {
   private readonly roomId: string;
   private readonly seed: number;
+  private readonly simulationOptions: SimulationOptions;
   private members: RoomMemberState[] = [];
-  private mapData: MapData = billiardsMapData;
-  private baseGameState: GameState = createBilliardsGameState();
+  private mapData: MapData = defaultOfficialMapSetup.mapData;
+  private baseGameState: GameState = defaultOfficialMapSetup.gameState;
   private gameState: GameState = createLobbyGameState("lobby", this.baseGameState);
   private shrinkCircleSettings: ShrinkCircleSettings = DEFAULT_SHRINK_CIRCLE_SETTINGS;
   private turnOrder: string[] = [];
   private nextJoinIndex = 1;
   private nextBotIndex = 1;
 
-  constructor(roomId: string, seed = Date.now()) {
+  constructor(roomId: string, seed = Date.now(), options: DiscArenaRoomOptions = {}) {
     this.roomId = normalizeRoomId(roomId);
     this.seed = seed;
-    this.baseGameState = createRoomBaseState(this.roomId, createBilliardsGameState(), this.seed);
+    this.simulationOptions = {
+      ...authoritativeSimulationOptions,
+      ...options.simulationOptions,
+      mode: "authoritative"
+    };
+    this.loadMapSetup(defaultOfficialMapSetup.mapData, defaultOfficialMapSetup.gameState);
     this.gameState = createLobbyGameState(this.roomId, this.baseGameState);
   }
 
@@ -271,22 +308,35 @@ export class DiscArenaRoom {
         return this.error("map_has_no_balls", "Imported maps need at least one ball.");
       }
 
-      this.mapData = editableMapToMapData(document);
-      this.baseGameState = createRoomBaseState(
-        this.roomId,
-        {
-          ...createBilliardsGameState(),
-          mapId: this.mapData.id,
-          bodies
-        },
-        this.seed
-      );
-      this.gameState = createLobbyGameState(this.roomId, this.baseGameState);
-      this.turnOrder = [];
-      this.syncMembersToGameState();
+      this.loadMapSetup(editableMapToMapData(document), {
+        ...defaultOfficialMapSetup.gameState,
+        mapId: document.id,
+        bodies
+      });
       return { ok: true, payload: this.snapshot() };
     } catch {
       return this.error("invalid_map", "Could not import this map.");
+    }
+  }
+
+  selectOfficialMap(socketId: string, mapId: string): RoomActionResult<RoomStatePayload> {
+    const actor = this.memberBySocket(socketId);
+    if (!actor?.isOwner) {
+      return this.error("not_room_owner", "Only the room owner can select maps.");
+    }
+    if (this.roomPhase() !== "lobby") {
+      return this.error("room_in_progress", "Maps can only be selected in the lobby.");
+    }
+
+    try {
+      const setup = createOfficialMapSetup(mapId);
+      if (setup.gameState.bodies.length === 0) {
+        return this.error("map_has_no_balls", "Official map has no balls.");
+      }
+      this.loadMapSetup(setup.mapData, setup.gameState);
+      return { ok: true, payload: this.snapshot() };
+    } catch {
+      return this.error("invalid_map", "Unknown official map.");
     }
   }
 
@@ -353,8 +403,13 @@ export class DiscArenaRoom {
       this.seed
     );
     this.gameState = setup.gameState;
+    initializePickupState(this.gameState);
     this.turnOrder = [...setup.turnOrder];
+    this.syncMembersToGameState();
+    this.gameState.roundSlotIndex = 0;
+    this.syncRoundCounters(this.gameState);
     this.refreshCurrentPlayerIfNeeded();
+    this.beginWaitingAction(this.gameState);
     return { ok: true, payload: this.snapshot() };
   }
 
@@ -381,6 +436,102 @@ export class DiscArenaRoom {
   submitShot(socketId: string, payload: ShotSubmitPayload): ShotSubmissionResult {
     const member = this.memberBySocket(socketId);
     return this.submitShotForPlayer(member?.playerId, payload);
+  }
+
+  resolveBonus(
+    socketId: string,
+    payload: BonusResolvePayload
+  ): RoomActionResult<RoomStatePayload> {
+    const playerId = this.memberBySocket(socketId)?.playerId;
+    if (!playerId) {
+      return this.error("unknown_player", "Unknown player.");
+    }
+    if (payload.knownStateHash !== this.stateHash()) {
+      return this.error("state_hash_mismatch", "Your local state is out of date.");
+    }
+
+    const pendingChoice = this.gameState.pendingBonusChoice;
+    const resolvingPendingChoice =
+      this.gameState.phase === "choosing_bonus" && pendingChoice?.playerId === playerId;
+    const resolvingBeforeShot =
+      this.gameState.phase === "waiting_for_shot" &&
+      this.gameState.currentPlayerId === playerId;
+    const resolvingOwnedOptions = playerHasBonusOptions(this.gameState, playerId);
+
+    if (!resolvingPendingChoice && !resolvingBeforeShot && !resolvingOwnedOptions) {
+      return this.error("not_bonus_player", "This player cannot choose a bonus now.");
+    }
+
+    if (payload.optionId) {
+      const result = resolveBonusOption(
+        this.gameState,
+        playerId,
+        payload.optionId,
+        resolvingPendingChoice ? pendingChoice?.recentAction : undefined
+      );
+      if (!result.ok) {
+        return this.error(result.reason ?? "invalid_bonus_option", "Invalid bonus option.");
+      }
+    } else {
+      keepBonusOptions(this.gameState, playerId);
+    }
+
+    if (resolvingPendingChoice) {
+      this.finishPendingBonusChoice(playerId);
+    }
+
+    return { ok: true, payload: this.snapshot() };
+  }
+
+  resolveTeleport(
+    socketId: string,
+    payload: BonusTeleportPayload
+  ): RoomActionResult<RoomStatePayload> {
+    const validation = this.validateTargetBonusAction(socketId, payload.knownStateHash, "teleport");
+    if (!validation.ok) {
+      return validation;
+    }
+    const playerId = validation.payload;
+    const body = this.gameState.bodies.find((candidate) => candidate.id === payload.bodyId);
+    if (!isBodyOwnedByPlayer(body, playerId)) {
+      return this.error("actor_not_owned", "Teleport can only move your own balls.");
+    }
+    if (!isBodyTeleportTargetLegal(this.gameState, this.mapData, payload.bodyId, payload.position)) {
+      return this.error("invalid_teleport_target", "That teleport target is not legal.");
+    }
+
+    const state = this.cloneState();
+    const optionCountBeforeAction = bonusOptionCount(state, playerId);
+    const stateBody = state.bodies.find((candidate) => candidate.id === payload.bodyId);
+    const previousPositions = new Map<string, BodyState["position"]>();
+    if (stateBody) {
+      previousPositions.set(stateBody.id, { ...stateBody.position });
+    }
+    clearActiveActionConstraint(state);
+    teleportBody(state, payload.bodyId, payload.position, 0);
+    collectPickups(state, 1, previousPositions);
+    return this.finishTargetBonusAction(state, playerId, payload.bodyId, optionCountBeforeAction);
+  }
+
+  resolveAnchor(
+    socketId: string,
+    payload: BonusAnchorPayload
+  ): RoomActionResult<RoomStatePayload> {
+    const validation = this.validateTargetBonusAction(socketId, payload.knownStateHash, "anchor");
+    if (!validation.ok) {
+      return validation;
+    }
+    const playerId = validation.payload;
+    const body = this.gameState.bodies.find((candidate) => candidate.id === payload.bodyId);
+    if (!body?.alive) {
+      return this.error("invalid_anchor_target", "Anchor needs a living target ball.");
+    }
+
+    const state = this.cloneState();
+    const optionCountBeforeAction = bonusOptionCount(state, playerId);
+    clearActiveActionConstraint(state);
+    applyAnchorModifier(state, payload.bodyId, playerId, 0);
+    return this.finishTargetBonusAction(state, playerId, payload.bodyId, optionCountBeforeAction);
   }
 
   submitShotForPlayer(
@@ -410,30 +561,110 @@ export class DiscArenaRoom {
       shotIntent: payload.shotIntent
     };
 
+    const roundSlotAtActionStart = this.gameState.roundSlotIndex ?? this.gameState.turnIndex;
     const poisonCoveredAtStart = this.poisonCoveredBodyIdsForPlayer(
       actingPlayerId,
       this.gameState,
-      this.gameState.turnIndex
+      roundSlotAtActionStart
     );
-    const simulationResult = simulateShot(
-      this.gameState,
-      this.mapData,
-      payload.shotIntent,
-      authoritativeSimulationOptions
-    );
-    const mapChanged = simulationChangedMap(simulationResult.events);
-    if (mapChanged && simulationResult.finalMapData) {
-      this.mapData = simulationResult.finalMapData;
+    const optionCountBeforeShot = bonusOptionCount(this.gameState, actingPlayerId);
+    const activeConstraint = this.gameState.activeActionConstraint
+      ? cloneJson(this.gameState.activeActionConstraint)
+      : undefined;
+    const stateForShot = this.cloneState();
+    consumeShotStartBonuses(stateForShot, actingPlayerId);
+    clearActiveActionConstraint(stateForShot);
+    let shotIntentForSimulation = payload.shotIntent;
+    let temporaryProjectileBodyId: string | undefined;
+    const preSimulationEvents: SimulationEvent[] = [];
+    if (activeConstraint?.kind === "shuriken" || activeConstraint?.kind === "summon_half_ball") {
+      const projectile = createActionProjectile(
+        stateForShot,
+        payload.shotIntent.actorBodyId,
+        activeConstraint.kind,
+        payload.shotId,
+        0
+      );
+      if (!projectile) {
+        return {
+          ok: false,
+          rejected: {
+            shotId: payload.shotId,
+            reason: "projectile_spawn_failed",
+            gameState: this.cloneState(),
+            stateHash: this.stateHash()
+          }
+        };
+      }
+      preSimulationEvents.push(...projectile.events);
+      shotIntentForSimulation = {
+        ...payload.shotIntent,
+        actorBodyId: projectile.bodyId
+      };
+      if (activeConstraint.kind === "shuriken") {
+        temporaryProjectileBodyId = projectile.bodyId;
+      }
     }
-    const finalState = simulationResult.finalState;
+    const simulationResult = simulateShot(
+      stateForShot,
+      this.mapData,
+      shotIntentForSimulation,
+      this.simulationOptions
+    );
+    let simulationEvents = [...preSimulationEvents, ...simulationResult.events];
+    const playbackFrames = [...(simulationResult.frames ?? [])];
+    let finalMapData = simulationResult.finalMapData ?? this.mapData;
+    let finalState = simulationResult.finalState;
+
+    if (temporaryProjectileBodyId) {
+      simulationEvents.push(
+        ...destroyTemporaryBody(
+          finalState,
+          temporaryProjectileBodyId,
+          nextEventStep(simulationEvents),
+          "shuriken"
+        )
+      );
+    }
+
+    if (activeConstraint?.kind === "bomb") {
+      const explosionStep = nextEventStep(simulationEvents);
+      simulationEvents.push(
+        ...applyBombExplosion(finalState, shotIntentForSimulation.actorBodyId, explosionStep)
+      );
+      const continuation = continueSimulation(
+        finalState,
+        finalMapData,
+        this.simulationOptions,
+        explosionStep
+      );
+      simulationEvents = [...simulationEvents, ...continuation.events];
+      playbackFrames.push(...(continuation.frames ?? []));
+      finalState = continuation.finalState;
+      finalMapData = continuation.finalMapData ?? finalMapData;
+    }
+
+    const mapChanged = simulationChangedMap(simulationEvents);
+    if (mapChanged) {
+      this.mapData = finalMapData;
+    }
     finalState.players = this.playerStatesFromMembers(finalState);
     finalState.turnIndex = this.gameState.turnIndex + 1;
     const poisonEvents = this.applyPoisonEliminations(
       finalState,
       actingPlayerId,
       poisonCoveredAtStart,
-      finalState.turnIndex,
-      nextEventStep(simulationResult.events)
+      roundSlotAtActionStart,
+      nextEventStep(simulationEvents)
+    );
+    const recentAction = {
+      actorBodyId: payload.shotIntent.actorBodyId,
+      hadElimination: eventsIncludeElimination([...simulationEvents, ...poisonEvents])
+    };
+    applyPendingActionBonusesAfterShot(
+      finalState,
+      actingPlayerId,
+      recentAction
     );
     const settlement = settleMatchState(
       finalState,
@@ -441,6 +672,33 @@ export class DiscArenaRoom {
       actingPlayerId,
       this.connectedMemberIds()
     );
+    if (settlement.gameState.phase !== "finished") {
+      this.advanceNormalTurnAfterAction(
+        settlement.gameState,
+        actingPlayerId,
+        activeConstraint === undefined
+      );
+    }
+    const collectedBonusThisShot =
+      bonusOptionCount(settlement.gameState, actingPlayerId) > optionCountBeforeShot;
+    if (
+      settlement.gameState.phase !== "finished" &&
+      collectedBonusThisShot &&
+      this.playerCanContinue(settlement.gameState, actingPlayerId)
+    ) {
+      const nextPlayerId = settlement.gameState.currentPlayerId || undefined;
+      settlement.gameState.phase = "choosing_bonus";
+      settlement.gameState.currentPlayerId = actingPlayerId;
+      settlement.gameState.pendingBonusChoice = createPendingBonusChoice(
+        actingPlayerId,
+        settlement.gameState.turnIndex,
+        nextPlayerId,
+        recentAction
+      );
+      clearActiveActionConstraint(settlement.gameState);
+    } else if (settlement.gameState.phase !== "finished") {
+      this.activateNextActionOrSpawn(settlement.gameState, actingPlayerId);
+    }
     this.gameState = settlement.gameState;
     const resultHash = this.stateHash();
     const resolved: ShotResolvedPayload = {
@@ -450,15 +708,15 @@ export class DiscArenaRoom {
       initialState: simulationResult.initialState,
       shotIntent: payload.shotIntent,
       finalState: this.cloneState(),
-      ...(mapChanged && simulationResult.finalMapData
-        ? { finalMapData: simulationResult.finalMapData }
+      ...(mapChanged
+        ? { finalMapData }
         : {}),
       events: [
-        ...simulationResult.events,
+        ...simulationEvents,
         ...poisonEvents,
         ...matchSettlementEvents(settlement.eliminatedPlayerIds, settlement.winnerPlayerId)
       ],
-      frames: simulationResult.frames ?? [],
+      frames: playbackFrames,
       shrinkCircle: this.shrinkCircleState(),
       resultHash
     };
@@ -492,7 +750,18 @@ export class DiscArenaRoom {
 
   playBotTurns(): AcceptedShot[] {
     const shots: AcceptedShot[] = [];
-    for (let attempts = 0; attempts < this.turnOrder.length; attempts += 1) {
+    for (let attempts = 0; attempts < this.turnOrder.length * 4; attempts += 1) {
+      if (this.gameState.phase === "choosing_bonus") {
+        const member = this.members.find(
+          (candidate) => candidate.playerId === this.gameState.pendingBonusChoice?.playerId
+        );
+        if (!member || member.kind !== "bot") {
+          break;
+        }
+        this.resolveBotBonus(member.playerId);
+        continue;
+      }
+
       if (this.gameState.phase !== "waiting_for_shot") {
         break;
       }
@@ -500,8 +769,26 @@ export class DiscArenaRoom {
       if (!member || member.kind !== "bot") {
         break;
       }
+      if (this.resolveBotTargetBonus(member.playerId)) {
+        continue;
+      }
+      if (
+        this.gameState.activeActionConstraint?.kind === "teleport" ||
+        this.gameState.activeActionConstraint?.kind === "anchor"
+      ) {
+        break;
+      }
+      if (playerHasBonusOptions(this.gameState, member.playerId)) {
+        this.resolveBotBonus(member.playerId);
+        continue;
+      }
 
-      const shotIntent = chooseBotShotIntent(this.gameState, this.mapData, member.playerId);
+      const shotIntent = chooseBotShotIntent(
+        this.gameState,
+        this.mapData,
+        member.playerId,
+        this.shrinkCircleState()
+      );
       if (!shotIntent) {
         this.finishEmptyBotTurn(member.playerId);
         continue;
@@ -560,6 +847,12 @@ export class DiscArenaRoom {
     if (!allBodiesSleeping(this.gameState.bodies)) {
       return "bodies_still_moving";
     }
+    if (
+      this.gameState.activeActionConstraint?.kind === "teleport" ||
+      this.gameState.activeActionConstraint?.kind === "anchor"
+    ) {
+      return "action_requires_target";
+    }
 
     const player = this.gameState.players.find((candidate) => candidate.id === playerId);
     if (!player || player.connected === false || player.eliminated) {
@@ -572,8 +865,163 @@ export class DiscArenaRoom {
     if (!isBodyOwnedByPlayer(actor, playerId)) {
       return "actor_not_owned";
     }
+    if (!actionConstraintAllowsBody(this.gameState, playerId, actor)) {
+      return "actor_not_allowed";
+    }
+    if (payload.shotIntent.power > shotPowerLimitForPlayer(this.gameState, playerId) + 0.0001) {
+      return "shot_power_too_high";
+    }
 
     return undefined;
+  }
+
+  private validateTargetBonusAction(
+    socketId: string,
+    knownStateHash: string,
+    kind: "teleport" | "anchor"
+  ): RoomActionResult<string> {
+    const playerId = this.memberBySocket(socketId)?.playerId;
+    if (!playerId) {
+      return this.error("unknown_player", "Unknown player.");
+    }
+    if (knownStateHash !== this.stateHash()) {
+      return this.error("state_hash_mismatch", "Your local state is out of date.");
+    }
+    if (this.gameState.phase !== "waiting_for_shot") {
+      return this.error("room_not_waiting_for_shot", "This action is not available now.");
+    }
+    if (this.gameState.currentPlayerId !== playerId) {
+      return this.error("not_current_player", "It is not your turn.");
+    }
+    if (!allBodiesSleeping(this.gameState.bodies)) {
+      return this.error("bodies_still_moving", "Wait for all balls to stop.");
+    }
+    const player = this.gameState.players.find((candidate) => candidate.id === playerId);
+    if (!player || player.connected === false || player.eliminated) {
+      return this.error("player_not_active", "This player cannot act.");
+    }
+    const constraint = this.gameState.activeActionConstraint;
+    if (!constraint || constraint.kind !== kind || constraint.ownerPlayerId !== playerId) {
+      return this.error("wrong_action_mode", "This bonus action is not active.");
+    }
+    return { ok: true, payload: playerId };
+  }
+
+  private finishTargetBonusAction(
+    state: GameState,
+    actingPlayerId: string,
+    actorBodyId: string,
+    optionCountBeforeAction: number
+  ): RoomActionResult<RoomStatePayload> {
+    state.players = this.playerStatesFromMembers(state);
+    state.turnIndex = this.gameState.turnIndex + 1;
+    const recentAction = {
+      actorBodyId,
+      hadElimination: false
+    };
+    const settlement = settleMatchState(
+      state,
+      this.turnOrder,
+      actingPlayerId,
+      this.connectedMemberIds()
+    );
+    if (settlement.gameState.phase !== "finished") {
+      this.advanceNormalTurnAfterAction(settlement.gameState, actingPlayerId, false);
+    }
+    const collectedBonusThisAction =
+      bonusOptionCount(settlement.gameState, actingPlayerId) > optionCountBeforeAction;
+    if (
+      settlement.gameState.phase !== "finished" &&
+      collectedBonusThisAction &&
+      this.playerCanContinue(settlement.gameState, actingPlayerId)
+    ) {
+      const nextPlayerId = settlement.gameState.currentPlayerId || undefined;
+      settlement.gameState.phase = "choosing_bonus";
+      settlement.gameState.currentPlayerId = actingPlayerId;
+      settlement.gameState.pendingBonusChoice = createPendingBonusChoice(
+        actingPlayerId,
+        settlement.gameState.turnIndex,
+        nextPlayerId,
+        recentAction
+      );
+      clearActiveActionConstraint(settlement.gameState);
+    } else if (settlement.gameState.phase !== "finished") {
+      this.activateNextActionOrSpawn(settlement.gameState, actingPlayerId);
+    }
+    this.gameState = settlement.gameState;
+    return { ok: true, payload: this.snapshot() };
+  }
+
+  private advanceNormalTurnAfterAction(
+    state: GameState,
+    actingPlayerId: string,
+    advanceCompletedSlot: boolean
+  ): void {
+    if (this.turnOrder.length === 0) {
+      state.currentPlayerId = "";
+      this.syncRoundCounters(state);
+      return;
+    }
+
+    if (state.roundSlotIndex === undefined) {
+      state.roundSlotIndex = this.roundSlotIndexForPlayerSlot(actingPlayerId);
+    }
+    if (advanceCompletedSlot) {
+      state.roundSlotIndex += 1;
+    }
+    this.selectNextNormalTurnPlayer(state);
+  }
+
+  private selectNextNormalTurnPlayer(state: GameState): void {
+    if (this.turnOrder.length === 0) {
+      state.currentPlayerId = "";
+      this.syncRoundCounters(state);
+      return;
+    }
+
+    state.roundSlotIndex = state.roundSlotIndex ?? 0;
+    for (let skipped = 0; skipped < this.turnOrder.length; skipped += 1) {
+      this.syncRoundCounters(state);
+      const playerId = this.turnOrder[state.roundSlotIndex % this.turnOrder.length]!;
+      if (this.playerCanTakeNormalTurn(state, playerId)) {
+        state.currentPlayerId = playerId;
+        state.phase = "waiting_for_shot";
+        return;
+      }
+      state.roundSlotIndex += 1;
+      state.turnIndex += 1;
+    }
+    state.currentPlayerId = "";
+    this.syncRoundCounters(state);
+  }
+
+  private playerCanTakeNormalTurn(state: GameState, playerId: string): boolean {
+    const member = this.members.find((candidate) => candidate.playerId === playerId);
+    const player = state.players.find((candidate) => candidate.id === playerId);
+    const ballCounts = countAliveOwnedBodies(state);
+    return Boolean(
+      member &&
+      this.isActiveRoomMember(member) &&
+      player &&
+      !player.eliminated &&
+      (ballCounts[playerId] ?? 0) > 0
+    );
+  }
+
+  private roundSlotIndexForPlayerSlot(playerId: string): number {
+    const orderLength = Math.max(1, this.turnOrder.length);
+    const currentSlot = this.gameState.roundSlotIndex ?? 0;
+    const playerIndex = Math.max(0, this.turnOrder.indexOf(playerId));
+    const currentRoundStart = currentSlot - (currentSlot % orderLength);
+    const candidate = currentRoundStart + playerIndex;
+    return candidate < currentSlot ? candidate + orderLength : candidate;
+  }
+
+  private syncRoundCounters(state: GameState): void {
+    const orderLength = Math.max(1, this.turnOrder.length || this.members.length || 1);
+    const slotIndex = state.roundSlotIndex ?? 0;
+    state.roundSlotIndex = slotIndex;
+    state.roundIndex = Math.floor(slotIndex / orderLength);
   }
 
   private refreshCurrentPlayerIfNeeded(): void {
@@ -584,17 +1032,15 @@ export class DiscArenaRoom {
     const currentMember = this.members.find(
       (member) => member.playerId === this.gameState.currentPlayerId
     );
-    if (currentMember && this.isActiveRoomMember(currentMember)) {
+    if (
+      currentMember &&
+      this.isActiveRoomMember(currentMember) &&
+      this.playerCanTakeNormalTurn(this.gameState, currentMember.playerId)
+    ) {
       return;
     }
 
-    this.gameState.currentPlayerId =
-      nextTurnPlayerId(
-        this.gameState,
-        this.turnOrder.length ? this.turnOrder : this.members.map((member) => member.playerId),
-        this.gameState.currentPlayerId,
-        this.connectedMemberIds()
-      ) ?? "";
+    this.selectNextNormalTurnPlayer(this.gameState);
   }
 
   private syncMembersToGameState(): void {
@@ -604,6 +1050,7 @@ export class DiscArenaRoom {
   private playerStatesFromMembers(sourceState: GameState): GameState["players"] {
     return this.members.map((member, index) => {
       const existing = sourceState.players.find((player) => player.id === member.playerId);
+      const turnOrderIndex = this.turnOrder.indexOf(member.playerId);
       return {
         id: member.playerId,
         teamId: member.playerId,
@@ -612,7 +1059,7 @@ export class DiscArenaRoom {
         connected: member.connected,
         isBot: member.kind === "bot",
         eliminated: existing?.eliminated ?? false,
-        turnOrderIndex: index
+        turnOrderIndex: turnOrderIndex >= 0 ? turnOrderIndex : index
       };
     });
   }
@@ -649,7 +1096,7 @@ export class DiscArenaRoom {
     );
   }
 
-  private shrinkCircleState(turnIndex = this.gameState.turnIndex) {
+  private shrinkCircleState(turnIndex = this.gameState.roundSlotIndex ?? this.gameState.turnIndex) {
     return shrinkCircleStateForTurn(
       this.mapData,
       turnIndex,
@@ -724,6 +1171,117 @@ export class DiscArenaRoom {
     return this.members.find((member) => member.playerId === this.gameState.currentPlayerId);
   }
 
+  private beginWaitingAction(state: GameState): void {
+    delete state.pendingBonusChoice;
+    if (state.phase !== "waiting_for_shot" || !state.currentPlayerId) {
+      return;
+    }
+    clearAnchorModifiersForPlayer(state, state.currentPlayerId);
+    spawnPickupForTurn(state, this.mapData);
+  }
+
+  private activateNextActionOrSpawn(state: GameState, actingPlayerId: string): void {
+    if (state.phase !== "waiting_for_shot") {
+      return;
+    }
+    const token = takeNextUsableActionToken(state, actingPlayerId);
+    if (token) {
+      state.currentPlayerId = actingPlayerId;
+      state.phase = "waiting_for_shot";
+    }
+    this.beginWaitingAction(state);
+  }
+
+  private finishPendingBonusChoice(playerId: string): void {
+    const pendingChoice = this.gameState.pendingBonusChoice;
+    if (!pendingChoice || pendingChoice.playerId !== playerId) {
+      return;
+    }
+
+    const token = takeNextUsableActionToken(this.gameState, playerId);
+    if (token) {
+      this.gameState.currentPlayerId = playerId;
+      this.gameState.phase = "waiting_for_shot";
+    } else if (pendingChoice.nextPlayerId) {
+      this.gameState.currentPlayerId = pendingChoice.nextPlayerId;
+      this.gameState.phase = "waiting_for_shot";
+      clearActiveActionConstraint(this.gameState);
+    } else {
+      this.gameState.currentPlayerId = "";
+      this.gameState.phase = "finished";
+      clearActiveActionConstraint(this.gameState);
+    }
+    delete this.gameState.pendingBonusChoice;
+    this.beginWaitingAction(this.gameState);
+  }
+
+  private resolveBotBonus(playerId: string): void {
+    const options = getPlayerBonusState(this.gameState, playerId).options;
+    const option = options[botBonusOptionIndex(this.seed, this.gameState.turnIndex, options.length)];
+    if (option) {
+      resolveBonusOption(
+        this.gameState,
+        playerId,
+        option.id,
+        this.gameState.phase === "choosing_bonus"
+          ? this.gameState.pendingBonusChoice?.recentAction
+          : undefined
+      );
+    } else {
+      keepBonusOptions(this.gameState, playerId);
+    }
+    if (this.gameState.phase === "choosing_bonus") {
+      this.finishPendingBonusChoice(playerId);
+    }
+  }
+
+  private resolveBotTargetBonus(playerId: string): boolean {
+    const constraint = this.gameState.activeActionConstraint;
+    if (!constraint || constraint.ownerPlayerId !== playerId) {
+      return false;
+    }
+    if (constraint.kind === "teleport") {
+      const body = this.gameState.bodies.find(
+        (candidate) => candidate.alive && candidate.ownerPlayerId === playerId
+      );
+      if (!body || !isBodyTeleportTargetLegal(this.gameState, this.mapData, body.id, body.position)) {
+        return false;
+      }
+      const state = this.cloneState();
+      const optionCountBeforeAction = bonusOptionCount(state, playerId);
+      clearActiveActionConstraint(state);
+      teleportBody(state, body.id, body.position, 0);
+      this.finishTargetBonusAction(state, playerId, body.id, optionCountBeforeAction);
+      return true;
+    }
+    if (constraint.kind === "anchor") {
+      const body =
+        this.gameState.bodies.find(
+          (candidate) => candidate.alive && candidate.ownerPlayerId !== playerId
+        ) ??
+        this.gameState.bodies.find((candidate) => candidate.alive);
+      if (!body) {
+        return false;
+      }
+      const state = this.cloneState();
+      const optionCountBeforeAction = bonusOptionCount(state, playerId);
+      clearActiveActionConstraint(state);
+      applyAnchorModifier(state, body.id, playerId, 0);
+      this.finishTargetBonusAction(state, playerId, body.id, optionCountBeforeAction);
+      return true;
+    }
+    return false;
+  }
+
+  private playerCanContinue(state: GameState, playerId: string): boolean {
+    const player = state.players.find((candidate) => candidate.id === playerId);
+    return Boolean(
+      player &&
+      !player.eliminated &&
+      state.bodies.some((body) => body.alive && body.ownerPlayerId === playerId)
+    );
+  }
+
   private finishEmptyBotTurn(botPlayerId: string): void {
     this.gameState.turnIndex += 1;
     const settlement = settleMatchState(
@@ -732,6 +1290,10 @@ export class DiscArenaRoom {
       botPlayerId,
       this.connectedMemberIds()
     );
+    if (settlement.gameState.phase !== "finished") {
+      this.advanceNormalTurnAfterAction(settlement.gameState, botPlayerId, true);
+      this.activateNextActionOrSpawn(settlement.gameState, botPlayerId);
+    }
     this.gameState = settlement.gameState;
   }
 
@@ -772,6 +1334,14 @@ export class DiscArenaRoom {
     return JSON.parse(JSON.stringify(this.gameState)) as GameState;
   }
 
+  private loadMapSetup(mapData: MapData, sourceState: GameState): void {
+    this.mapData = cloneJson(mapData);
+    this.baseGameState = createRoomBaseState(this.roomId, sourceState, this.seed);
+    this.gameState = createLobbyGameState(this.roomId, this.baseGameState);
+    this.turnOrder = [];
+    this.syncMembersToGameState();
+  }
+
   private joinedPayload(member: RoomMemberState): RoomJoinedPayload {
     if (!member.rejoinToken) {
       throw new Error("Only human members can receive joined payloads.");
@@ -794,6 +1364,8 @@ function createRoomBaseState(roomId: string, source: GameState, seed: number): G
     ...cloned,
     gameId: `room-${roomId}`,
     turnIndex: 0,
+    roundSlotIndex: 0,
+    roundIndex: 0,
     currentPlayerId: "",
     phase: "lobby",
     players: [],
@@ -804,8 +1376,12 @@ function createRoomBaseState(roomId: string, source: GameState, seed: number): G
       alive: true,
       sleep: true
     })),
+    pickups: [],
+    playerBonuses: [],
     rngSeed: seed
   };
+  delete state.pendingBonusChoice;
+  delete state.activeActionConstraint;
   delete state.winnerTeamId;
   return state;
 }
@@ -815,10 +1391,16 @@ function createLobbyGameState(roomId: string, baseState: GameState): GameState {
     ...(JSON.parse(JSON.stringify(baseState)) as GameState),
     gameId: `room-${roomId}`,
     turnIndex: 0,
+    roundSlotIndex: 0,
+    roundIndex: 0,
     currentPlayerId: "",
     phase: "lobby",
-    players: []
+    players: [],
+    pickups: [],
+    playerBonuses: []
   };
+  delete state.pendingBonusChoice;
+  delete state.activeActionConstraint;
   delete state.winnerTeamId;
   return state;
 }
@@ -834,6 +1416,13 @@ function normalizeName(name: string | undefined, fallback: string): string {
 
 function createToken(): string {
   return randomBytes(12).toString("hex");
+}
+
+function botBonusOptionIndex(seed: number, turnIndex: number, optionCount: number): number {
+  if (optionCount <= 0) {
+    return -1;
+  }
+  return Math.abs(Math.imul(seed >>> 0, 1103515245) + turnIndex * 12345) % optionCount;
 }
 
 function matchSettlementEvents(
@@ -883,4 +1472,8 @@ function bodySnapshot(body: BodyState) {
     radius: body.radius,
     mass: body.mass
   };
+}
+
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }

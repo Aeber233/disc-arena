@@ -8,40 +8,32 @@ import { generateCandidates } from "./generateCandidates";
 import { scoreShot } from "./scoreShot";
 
 /**
- * Evaluates bounded candidates with fast_eval simulation and returns the best
- * legal shot found.
+ * Evaluates 40 random weighted shots plus any direct ring-out shots, then
+ * returns the highest-scoring legal intent.
  */
 export function chooseBotShot(
   gameState: GameState,
   mapData: MapData,
-  actorBodyId: string,
+  playerId: string,
   partialOptions: Partial<BotOptions> = {}
-): ShotIntent {
+): ShotIntent | undefined {
   const options = resolveBotOptions(partialOptions);
-  const candidates = generateCandidates(gameState, actorBodyId, options);
-  const fallback = candidates[0] ?? {
-    actorBodyId,
-    angle: 0,
-    power: 0,
-    spinOffset: 0
-  };
+  const candidates = generateCandidates(gameState, mapData, playerId, options);
+  if (candidates.length === 0) {
+    return undefined;
+  }
 
-  let bestShot = fallback;
+  let bestShot = candidates[0]!;
   let bestScore = Number.NEGATIVE_INFINITY;
-  const deadline = Date.now() + Math.max(0, options.maxThinkTimeMs);
 
   for (const candidate of candidates) {
-    if (Date.now() > deadline) {
-      break;
-    }
-
     const result = simulateShot(
       gameState,
       mapData,
       candidate,
       options.simulationOptions
     );
-    const score = scoreShot(result, mapData, actorBodyId);
+    const score = scoreShot(result, mapData, candidate.actorBodyId, options.shrinkCircle);
 
     if (score > bestScore) {
       bestScore = score;

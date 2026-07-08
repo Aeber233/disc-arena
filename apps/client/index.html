@@ -32,6 +32,13 @@
         </button>
         <div id="hud-body" class="play-card-body"></div>
       </section>
+      <section id="bonus-panel" class="bonus-panel play-card" hidden>
+        <button class="play-card-title" data-collapse-panel="bonus" type="button">
+          <span>Bonus</span>
+          <span id="bonus-summary">No choices</span>
+        </button>
+        <div id="bonus-body" class="play-card-body"></div>
+      </section>
       <section id="room-panel" class="room-panel play-card">
         <button class="play-card-title" data-collapse-panel="room" type="button">
           <span>Room</span>
@@ -45,6 +52,12 @@
             <button id="room-add-bot" type="button">Add Bot</button>
             <button id="room-leave" type="button">Leave</button>
           </div>
+          <div class="room-row room-map-controls">
+            <label for="room-official-map">Map</label>
+            <select id="room-official-map"></select>
+            <button id="room-use-map" type="button">Use Map</button>
+          </div>
+          <div id="room-map-description" class="room-map-description"></div>
           <div class="room-row room-shrink-controls">
             <label>
               <input id="room-shrink-enabled" type="checkbox" />
@@ -52,7 +65,7 @@
             </label>
             <label>
               x
-              <input id="room-shrink-rounds" type="number" min="1" max="99" value="4" />
+              <input id="room-shrink-rounds" type="number" min="1" max="99" value="10" />
             </label>
             <button id="room-shrink-apply" type="button">Apply</button>
           </div>

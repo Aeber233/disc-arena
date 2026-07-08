@@ -1,6 +1,7 @@
 import type { GameState } from "./game";
 import type { MapData } from "./map";
 import type { ShotIntent } from "./shot";
+import type { Vec2 } from "../math/vec2";
 import type { SimulationEvent, SimulationFrame } from "./simulation";
 import type { ShrinkCircleSettings, ShrinkCircleState } from "../rules/shrinkCircle";
 
@@ -58,6 +59,10 @@ export interface RoomImportMapPayload {
   readonly encodedMap: string;
 }
 
+export interface RoomSelectOfficialMapPayload {
+  readonly mapId: string;
+}
+
 export interface RoomAddBotPayload {
   readonly name?: string;
 }
@@ -75,6 +80,22 @@ export interface ShotSubmitPayload {
   readonly turnIndex: number;
   readonly knownStateHash: string;
   readonly shotIntent: ShotIntent;
+}
+
+export interface BonusResolvePayload {
+  readonly knownStateHash: string;
+  readonly optionId?: string;
+}
+
+export interface BonusTeleportPayload {
+  readonly knownStateHash: string;
+  readonly bodyId: string;
+  readonly position: Vec2;
+}
+
+export interface BonusAnchorPayload {
+  readonly knownStateHash: string;
+  readonly bodyId: string;
 }
 
 export interface ShotStartedPayload {
@@ -115,9 +136,13 @@ export interface ClientToServerEvents {
   readonly "room:leave": () => void;
   readonly "room:kick": (payload: RoomKickPayload) => void;
   readonly "room:import_map": (payload: RoomImportMapPayload) => void;
+  readonly "room:select_official_map": (payload: RoomSelectOfficialMapPayload) => void;
   readonly "room:add_bot": (payload: RoomAddBotPayload) => void;
   readonly "room:update_shrink_circle": (payload: RoomUpdateShrinkCirclePayload) => void;
   readonly "room:start": () => void;
+  readonly "bonus:resolve": (payload: BonusResolvePayload) => void;
+  readonly "bonus:teleport": (payload: BonusTeleportPayload) => void;
+  readonly "bonus:anchor": (payload: BonusAnchorPayload) => void;
   readonly "shot:submit": (payload: ShotSubmitPayload) => void;
   readonly "room:reset": () => void;
 }

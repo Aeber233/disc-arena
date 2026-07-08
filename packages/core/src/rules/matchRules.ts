@@ -47,6 +47,8 @@ export function setupMatchGameState(
     ...cloneGameState(baseState),
     players: playerStates,
     bodies,
+    roundSlotIndex: 0,
+    roundIndex: 0,
     phase: "waiting_for_shot"
   };
   delete nextState.winnerTeamId;

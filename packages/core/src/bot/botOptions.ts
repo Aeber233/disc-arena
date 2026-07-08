@@ -1,29 +1,30 @@
-import { PHYSICS_POWER_SCALE } from "../physics/units";
 import type { SimulationOptions } from "../types/simulation";
+import type { ShrinkCircleState } from "../rules/shrinkCircle";
 
 /**
  * Bot search limits and simple candidate tuning.
  */
 export interface BotOptions {
+  /**
+   * Number of random shots to sample. Direct ring-out opportunities are added
+   * on top of this count.
+   */
   readonly maxCandidates: number;
   readonly maxThinkTimeMs: number;
-  readonly powers: readonly number[];
-  readonly spinOffsets: readonly number[];
   readonly rngSeed: number;
   readonly simulationOptions: SimulationOptions;
+  readonly shrinkCircle?: ShrinkCircleState;
 }
 
 export const DEFAULT_BOT_OPTIONS: BotOptions = {
-  maxCandidates: 24,
-  maxThinkTimeMs: 25,
-  powers: [20, 45, 70].map((power) => power * PHYSICS_POWER_SCALE),
-  spinOffsets: [-0.5, 0, 0.5],
+  maxCandidates: 40,
+  maxThinkTimeMs: 80,
   rngSeed: 1,
   simulationOptions: {
     mode: "fast_eval",
     fixedDt: 1 / 30,
-    maxSteps: 180,
-    collisionIterations: 2,
+    maxSteps: 240,
+    collisionIterations: 1,
     recordFrames: false,
     frameIntervalSteps: 5,
     quantize: true

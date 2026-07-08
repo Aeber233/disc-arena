@@ -1,4 +1,5 @@
-import type { GameState, MapData, ShotIntent } from "@disc-arena/core";
+import { chooseBotShot } from "@disc-arena/core";
+import type { GameState, MapData, ShotIntent, ShrinkCircleState } from "@disc-arena/core";
 
 /**
  * Temporary server-side bot input provider.
@@ -7,20 +8,20 @@ import type { GameState, MapData, ShotIntent } from "@disc-arena/core";
 export function chooseBotShotIntent(
   gameState: GameState,
   mapData: MapData,
-  botPlayerId: string
+  botPlayerId: string,
+  shrinkCircle?: ShrinkCircleState
 ): ShotIntent | undefined {
-  void mapData;
-  const actor = gameState.bodies.find(
-    (body) => body.alive && body.ownerPlayerId === botPlayerId
-  );
-  if (!actor) {
-    return undefined;
-  }
-
-  return {
-    actorBodyId: actor.id,
-    angle: 0,
-    power: 0,
-    spinOffset: 0
-  };
+  return chooseBotShot(gameState, mapData, botPlayerId, {
+    rngSeed: gameState.rngSeed + gameState.turnIndex,
+    ...(shrinkCircle ? { shrinkCircle } : {}),
+    simulationOptions: {
+      mode: "fast_eval",
+      fixedDt: 1 / 20,
+      maxSteps: 80,
+      collisionIterations: 1,
+      recordFrames: false,
+      frameIntervalSteps: 5,
+      quantize: true
+    }
+  });
 }

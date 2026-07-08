@@ -1,21 +1,29 @@
 import {
+  actionKindLabel,
   add,
   allBodiesSleeping,
   billiardsMapData,
   buildBodyProxies,
   createBilliardsGameState,
   distance,
+  hasTrajectoryPreviewCharge,
   hashGameState,
+  isBodyTeleportTargetLegal,
   length,
+  OFFICIAL_MAP_SUMMARIES,
   PHYSICS_POWER_SCALE,
   PIXEL_BODY_UNIT,
   portalEndpointA,
   portalEndpointB,
   scale,
+  shotPowerLimitForPlayer,
+  simulateShot,
   sub,
+  TELEPORT_RANGE,
   transformVector
 } from "@disc-arena/core";
 import type {
+  BonusKind,
   BodyState,
   BodyProxy,
   ClientToServerEvents,
@@ -49,6 +57,9 @@ const canvas = requiredElement<HTMLCanvasElement>("#game");
 const hud = requiredElement<HTMLElement>("#hud");
 const hudSummary = requiredElement<HTMLElement>("#hud-summary");
 const hudBody = requiredElement<HTMLDivElement>("#hud-body");
+const bonusPanel = requiredElement<HTMLElement>("#bonus-panel");
+const bonusSummary = requiredElement<HTMLElement>("#bonus-summary");
+const bonusBody = requiredElement<HTMLDivElement>("#bonus-body");
 const resetButton = requiredElement<HTMLButtonElement>("#reset");
 const playPanel = requiredElement<HTMLDivElement>("#play-panel");
 const roomPanel = requiredElement<HTMLDivElement>("#room-panel");
@@ -61,6 +72,9 @@ const roomLeaveButton = requiredElement<HTMLButtonElement>("#room-leave");
 const roomStartButton = requiredElement<HTMLButtonElement>("#room-start");
 const roomImportButton = requiredElement<HTMLButtonElement>("#room-import");
 const roomImportFile = requiredElement<HTMLInputElement>("#room-import-file");
+const roomOfficialMapSelect = requiredElement<HTMLSelectElement>("#room-official-map");
+const roomUseMapButton = requiredElement<HTMLButtonElement>("#room-use-map");
+const roomMapDescription = requiredElement<HTMLDivElement>("#room-map-description");
 const roomAddBotButton = requiredElement<HTMLButtonElement>("#room-add-bot");
 const roomShrinkEnabledInput = requiredElement<HTMLInputElement>("#room-shrink-enabled");
 const roomShrinkRoundsInput = requiredElement<HTMLInputElement>("#room-shrink-rounds");
@@ -96,11 +110,24 @@ const simulationOptions: SimulationOptions = {
   quantize: true
 };
 
+const trajectoryPreviewOptions: SimulationOptions = {
+  mode: "fast_eval",
+  fixedDt: 1 / 60,
+  maxSteps: 900,
+  collisionIterations: 3,
+  recordFrames: true,
+  frameIntervalSteps: 4,
+  quantize: false
+};
+
 const maxDragDistance = 180 * PIXEL_BODY_UNIT;
 const maxShotPower = 1500 * PHYSICS_POWER_SCALE;
 const cancelAimColor = "rgba(255,255,255,0.32)";
 const bodyNumberPixelSize = 3;
 const bodyNumberDigitGap = 1;
+const pickupVisualSizePx = 18;
+const pickupBorderPx = 2;
+const pickupQuestionBlockPx = 2;
 const tableSurroundColor = "#23754c";
 const tableSurfaceColor = "#1b5f3e";
 const voidSurfaceColor = "#303238";
@@ -123,19 +150,28 @@ const pixelWallFill = obstacleColors.wood;
 const pixelTableBorderColor = materialEdgeColor(tableSurfaceColor);
 const trailMinSpeed = 25 * PIXEL_BODY_UNIT;
 const trailFullSpeed = 520 * PIXEL_BODY_UNIT;
+const defaultShrinkCollapseRounds = 10;
+const shrinkVisualAnimationRate = 7;
+const shrinkVisualSnapEpsilon = PIXEL_BODY_UNIT * 0.25;
 const socketUrl = import.meta.env.VITE_SOCKET_URL ?? "http://127.0.0.1:3000";
 const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io(socketUrl);
 const rejoinSessionKey = "disc-arena-rejoin-token";
 const defaultShrinkCircleState: ShrinkCircleState = {
   enabled: false,
   active: false,
-  collapseRounds: 4,
+  collapseRounds: defaultShrinkCollapseRounds,
   startTurnIndex: 0,
   endTurnIndex: 0,
   progress: 0,
   center: { x: 0, y: 0 },
   safeRadius: 0
 };
+for (const summary of OFFICIAL_MAP_SUMMARIES) {
+  const option = document.createElement("option");
+  option.value = summary.id;
+  option.textContent = summary.name;
+  roomOfficialMapSelect.append(option);
+}
 type AppMode = "menu" | "play" | "editor";
 interface PixelCircleRun {
   readonly x: number;
@@ -172,6 +208,7 @@ interface AuthoritativePlayback {
   readonly shotId: string;
   readonly keyframes: readonly PlaybackKeyframe[];
   readonly resolved: ShotResolvedPayload;
+  readonly appliedMapEventKeys: Set<string>;
   elapsedSeconds: number;
 }
 
@@ -194,15 +231,18 @@ const pixelDiskCanvasCache = new Map<string, HTMLCanvasElement>();
 const bodyTrailHistory = new Map<string, BodyTrailSample[]>();
 let appMode: AppMode = "menu";
 let currentMapData: MapData = billiardsMapData;
+let selectedOfficialMapId = billiardsMapData.id;
 let gameState = createBilliardsGameState();
 let stateHash = hashGameState(gameState, true);
 let localPlayerId: string | undefined;
 let roomId: string | null = null;
+let ignoredRoomId: string | null = null;
 let roomPhase: RoomPhase = "lobby";
 let ownerPlayerId: string | undefined;
 let winnerPlayerId: string | undefined;
 let players: readonly RoomMember[] = [];
 let shrinkCircle: ShrinkCircleState = defaultShrinkCircleState;
+let visualShrinkCircle: ShrinkCircleState = defaultShrinkCircleState;
 let shrinkCircleControlsDirty = false;
 let selectedBodyId: string | undefined;
 let selectedProxyId: string | undefined;
@@ -211,11 +251,17 @@ let pointerCurrent: Vec2 | undefined;
 let playPanPointerId: number | undefined;
 let playPanLastPoint: Vec2 | undefined;
 let authoritativePlayback: AuthoritativePlayback | undefined;
+let pendingRoomState: RoomStatePayload | undefined;
+const pendingResolvedShots: ShotResolvedPayload[] = [];
 let awaitingShotId: string | undefined;
 let connectionState = "connecting";
 let roomMessage = "Create or join a room.";
 let hudCollapsed = false;
+let bonusCollapsed = false;
 let roomCollapsed = false;
+let bonusPanelRenderKey: string | undefined;
+let bonusResolving = false;
+let bonusMessage = "";
 let lastTime = performance.now();
 let accumulator = 0;
 let viewport = createViewport();
@@ -230,6 +276,7 @@ resetButton.addEventListener("click", () => {
 });
 
 roomCreateButton.addEventListener("click", () => {
+  ignoredRoomId = null;
   if (roomId) {
     setAppMode("play");
     return;
@@ -243,6 +290,7 @@ roomCreateButton.addEventListener("click", () => {
 });
 
 roomJoinButton.addEventListener("click", () => {
+  ignoredRoomId = null;
   if (roomId) {
     setAppMode("play");
     return;
@@ -276,6 +324,20 @@ roomImportFile.addEventListener("change", () => {
   void importRoomMap(roomImportFile);
 });
 
+roomOfficialMapSelect.addEventListener("change", () => {
+  selectedOfficialMapId = roomOfficialMapSelect.value;
+  renderRoomPanel();
+});
+
+roomUseMapButton.addEventListener("click", () => {
+  if (!isOfficialMapOption(selectedOfficialMapId)) {
+    return;
+  }
+  roomMessage = "Selecting map...";
+  renderRoomPanel();
+  socket.emit("room:select_official_map", { mapId: selectedOfficialMapId });
+});
+
 roomAddBotButton.addEventListener("click", () => {
   socket.emit("room:add_bot", {});
 });
@@ -292,27 +354,59 @@ roomShrinkApplyButton.addEventListener("click", () => {
   const collapseRounds = Number(roomShrinkRoundsInput.value);
   socket.emit("room:update_shrink_circle", {
     enabled: roomShrinkEnabledInput.checked,
-    collapseRounds: Number.isFinite(collapseRounds) ? collapseRounds : 4
+    collapseRounds: Number.isFinite(collapseRounds) ? collapseRounds : defaultShrinkCollapseRounds
   });
 });
 
 roomLeaveButton.addEventListener("click", () => {
+  const leavingRoomId = roomId;
   if (roomId) {
     socket.emit("room:leave");
   }
   clearRejoinToken();
   clearRoomState();
+  ignoredRoomId = leavingRoomId;
+  setAppMode("menu");
 });
 
 roomMembers.addEventListener("click", (event) => {
-  const target = event.target;
-  if (!(target instanceof HTMLButtonElement)) {
+  const button = eventButton(event.target)?.closest<HTMLButtonElement>(
+    "button[data-kick-player]"
+  );
+  const playerId = button?.dataset.kickPlayer;
+  if (!playerId) {
     return;
   }
-  const playerId = target.dataset.kickPlayer;
-  if (playerId) {
-    socket.emit("room:kick", { playerId });
+  roomMessage = "Updating room...";
+  renderRoomPanel();
+  socket.emit("room:kick", { playerId });
+});
+
+bonusBody.addEventListener("click", (event) => {
+  const button = eventButton(event.target)?.closest<HTMLButtonElement>(
+    "button[data-bonus-action]"
+  );
+  if (
+    !(button instanceof HTMLButtonElement) ||
+    button.disabled ||
+    bonusResolving ||
+    !canResolveBonus()
+  ) {
+    return;
   }
+  const action = button.dataset.bonusAction;
+  const optionId = action === "option" ? button.dataset.bonusOptionId : undefined;
+  if (action !== "keep" && !optionId) {
+    return;
+  }
+  bonusResolving = true;
+  bonusMessage = "Resolving...";
+  invalidateBonusPanel();
+  renderBonusPanel();
+  socket.emit("bonus:resolve", {
+    knownStateHash: stateHash,
+    ...(optionId ? { optionId } : {})
+  });
 });
 
 document.addEventListener("click", (event) => {
@@ -324,6 +418,10 @@ document.addEventListener("click", (event) => {
   const panelId = panel?.dataset.collapsePanel;
   if (panelId === "hud") {
     hudCollapsed = !hudCollapsed;
+    renderCollapsiblePanels();
+  }
+  if (panelId === "bonus") {
+    bonusCollapsed = !bonusCollapsed;
     renderCollapsiblePanels();
   }
   if (panelId === "room") {
@@ -347,6 +445,7 @@ socket.on("disconnect", () => {
 });
 
 socket.on("room:joined", (payload) => {
+  ignoredRoomId = null;
   localPlayerId = payload.playerId;
   roomMessage = `Joined room ${payload.roomId ?? ""}.`;
   if (payload.roomId) {
@@ -358,6 +457,13 @@ socket.on("room:joined", (payload) => {
 });
 
 socket.on("room:state", (payload) => {
+  if (!roomId && payload.roomId && payload.roomId === ignoredRoomId) {
+    return;
+  }
+  if (isAuthoritativePlaybackBusy()) {
+    pendingRoomState = payload;
+    return;
+  }
   applyRoomState(payload);
 });
 
@@ -366,18 +472,23 @@ socket.on("room:error", (payload) => {
 });
 
 socket.on("shot:started", (payload) => {
+  if (authoritativePlayback || pendingResolvedShots.length > 0) {
+    return;
+  }
   awaitingShotId = payload.shotId;
   gameState.phase = "simulating";
   renderRoomPanel();
 });
 
 socket.on("shot:resolved", (payload) => {
-  startAuthoritativePlayback(payload);
+  playOrQueueResolvedShot(payload);
 });
 
 socket.on("shot:rejected", (payload) => {
   awaitingShotId = undefined;
   authoritativePlayback = undefined;
+  pendingRoomState = undefined;
+  pendingResolvedShots.length = 0;
   resetLocalState(payload.gameState, payload.stateHash);
 });
 
@@ -401,6 +512,7 @@ function tick(now: number): void {
 
   if (appMode === "play") {
     updateAuthoritativePlayback(frameDt);
+    updateVisualShrinkCircle(frameDt);
     accumulator = 0;
     render(now);
   } else if (appMode === "menu") {
@@ -434,6 +546,15 @@ function handlePointerDown(event: PointerEvent): void {
     return;
   }
 
+  if (isTeleportMode()) {
+    handleTeleportPointerDown(screenPoint);
+    return;
+  }
+  if (isAnchorMode()) {
+    handleAnchorPointerDown(screenPoint);
+    return;
+  }
+
   if (!canShoot()) {
     return;
   }
@@ -449,6 +570,57 @@ function handlePointerDown(event: PointerEvent): void {
   pointerStart = { ...picked.proxy.position };
   pointerCurrent = worldPoint;
   canvas.setPointerCapture(event.pointerId);
+}
+
+function handleTeleportPointerDown(screenPoint: Vec2): void {
+  if (!canShoot()) {
+    return;
+  }
+  const worldPoint = screenToWorld(screenPoint);
+  const picked = pickBodyProxy(worldPoint, bodyProxiesForRender(), gameState.bodies);
+  if (picked && canTeleportBody(picked.body)) {
+    selectedBodyId = picked.body.id;
+    selectedProxyId = picked.proxy.proxyId;
+    pointerStart = undefined;
+    pointerCurrent = undefined;
+    return;
+  }
+  if (!selectedBodyId) {
+    roomMessage = "Select one of your balls to teleport.";
+    renderRoomPanel();
+    return;
+  }
+  if (!isBodyTeleportTargetLegal(gameState, currentMapData, selectedBodyId, worldPoint)) {
+    roomMessage = "That teleport spot is not legal.";
+    renderRoomPanel();
+    return;
+  }
+  roomMessage = "Teleporting...";
+  renderRoomPanel();
+  socket.emit("bonus:teleport", {
+    knownStateHash: stateHash,
+    bodyId: selectedBodyId,
+    position: worldPoint
+  });
+}
+
+function handleAnchorPointerDown(screenPoint: Vec2): void {
+  if (!canShoot()) {
+    return;
+  }
+  const worldPoint = screenToWorld(screenPoint);
+  const picked = pickBodyProxy(worldPoint, bodyProxiesForRender(), gameState.bodies);
+  if (!picked?.body.alive) {
+    roomMessage = "Select a ball to anchor.";
+    renderRoomPanel();
+    return;
+  }
+  roomMessage = "Anchoring...";
+  renderRoomPanel();
+  socket.emit("bonus:anchor", {
+    knownStateHash: stateHash,
+    bodyId: picked.body.id
+  });
 }
 
 function handlePointerMove(event: PointerEvent): void {
@@ -488,6 +660,10 @@ function handlePointerUp(event: PointerEvent): void {
     return;
   }
 
+  if (isTeleportMode() || isAnchorMode()) {
+    return;
+  }
+
   if (!selectedBodyId || !pointerStart || !pointerCurrent) {
     clearPointer();
     return;
@@ -508,7 +684,7 @@ function handlePointerUp(event: PointerEvent): void {
   }
 
   const drag = clampDrag(sub(pointerCurrent, pointerStart));
-  const power = (length(drag) / maxDragDistance) * maxShotPower;
+  const power = (length(drag) / maxDragDistance) * currentShotPowerLimit();
   if (power > 0) {
     const direction = transformVector(scale(drag, -1), selectedProxy.transformToBody);
     const shotId = createShotId();
@@ -655,8 +831,12 @@ function render(now: number): void {
   drawPortals();
   drawWalls();
   drawShrinkCircleOverlay();
+  drawPickups();
   drawAim(now, proxies);
+  drawActionTargetHints(proxies);
+  drawAnchorFields();
   drawBodies(proxies);
+  drawPlaybackEffects();
   recordBodyTrailSamples(proxies);
   updateHud();
 }
@@ -710,15 +890,16 @@ function drawTable(): void {
 }
 
 function drawShrinkCircleOverlay(): void {
-  if (!shrinkCircle.enabled || !shrinkCircle.active) {
+  const circle = visualShrinkCircle;
+  if (!circle.enabled || !circle.active) {
     return;
   }
 
   const bounds = currentMapBounds();
   const topLeft = worldToScreen({ x: bounds.left, y: bounds.top });
   const bottomRight = worldToScreen({ x: bounds.right, y: bounds.bottom });
-  const center = worldToScreen(shrinkCircle.center);
-  const safeRadius = shrinkCircle.safeRadius * viewport.scale;
+  const center = worldToScreen(circle.center);
+  const safeRadius = circle.safeRadius * viewport.scale;
 
   context.save();
   context.beginPath();
@@ -728,14 +909,14 @@ function drawShrinkCircleOverlay(): void {
     bottomRight.x - topLeft.x,
     bottomRight.y - topLeft.y
   );
-  if (safeRadius > 0.5 && shrinkCircle.progress < 1) {
+  if (safeRadius > 0.5 && circle.progress < 1) {
     context.moveTo(center.x + safeRadius, center.y);
     context.arc(center.x, center.y, safeRadius, 0, Math.PI * 2);
   }
   context.fillStyle = "rgba(255, 92, 168, 0.32)";
   context.fill("evenodd");
 
-  if (safeRadius > 0.5 && shrinkCircle.progress < 1) {
+  if (safeRadius > 0.5 && circle.progress < 1) {
     context.beginPath();
     context.arc(center.x, center.y, safeRadius, 0, Math.PI * 2);
     context.strokeStyle = "rgba(255, 174, 214, 0.72)";
@@ -743,6 +924,81 @@ function drawShrinkCircleOverlay(): void {
     context.stroke();
   }
   context.restore();
+}
+
+function updateVisualShrinkCircle(frameDt: number): void {
+  if (!shrinkCircle.enabled || !shrinkCircle.active) {
+    visualShrinkCircle = shrinkCircle;
+    return;
+  }
+
+  if (!visualShrinkCircle.enabled || !visualShrinkCircle.active) {
+    visualShrinkCircle = visualShrinkCircleFromInitialRadius(shrinkCircle);
+    return;
+  }
+
+  const radiusDelta = shrinkCircle.safeRadius - visualShrinkCircle.safeRadius;
+  const progressDelta = shrinkCircle.progress - visualShrinkCircle.progress;
+  if (
+    Math.abs(radiusDelta) <= shrinkVisualSnapEpsilon &&
+    Math.abs(progressDelta) <= 0.001
+  ) {
+    visualShrinkCircle = shrinkCircle;
+    return;
+  }
+
+  const alpha = 1 - Math.exp(-shrinkVisualAnimationRate * frameDt);
+  const nextSafeRadius = visualShrinkCircle.safeRadius + radiusDelta * alpha;
+  const nextProgress = visualShrinkCircle.progress + progressDelta * alpha;
+  visualShrinkCircle = {
+    ...shrinkCircle,
+    progress: nextProgress,
+    safeRadius: nextSafeRadius
+  };
+}
+
+function setShrinkCircle(next: ShrinkCircleState, animate: boolean): void {
+  const shouldSnap =
+    !animate ||
+    !next.enabled ||
+    !next.active ||
+    shrinkCircle.enabled !== next.enabled ||
+    distance(shrinkCircle.center, next.center) > PIXEL_BODY_UNIT;
+
+  shrinkCircle = next;
+  if (shouldSnap) {
+    visualShrinkCircle = next;
+    return;
+  }
+
+  if (!visualShrinkCircle.enabled || !visualShrinkCircle.active) {
+    visualShrinkCircle = visualShrinkCircleFromInitialRadius(next);
+    return;
+  }
+
+  visualShrinkCircle = {
+    ...next,
+    progress: visualShrinkCircle.progress,
+    safeRadius: visualShrinkCircle.safeRadius
+  };
+}
+
+function visualShrinkCircleFromInitialRadius(target: ShrinkCircleState): ShrinkCircleState {
+  const initialRadius = Math.max(target.safeRadius, initialShrinkSafeRadius());
+  const fullRadius = target.progress < 1
+    ? target.safeRadius / Math.max(0.001, 1 - target.progress)
+    : initialShrinkSafeRadius();
+  const progress = 1 - initialRadius / Math.max(1, fullRadius);
+  return {
+    ...target,
+    progress: Math.max(0, Math.min(target.progress, progress)),
+    safeRadius: initialRadius
+  };
+}
+
+function initialShrinkSafeRadius(): number {
+  const bounds = currentMapBounds();
+  return Math.hypot(bounds.right - bounds.left, bounds.bottom - bounds.top) / 2;
 }
 
 function drawTerrain(mapData: MapData): void {
@@ -788,6 +1044,50 @@ function drawHoleTriggers(): void {
     );
   }
   context.restore();
+}
+
+function drawPickups(): void {
+  const pickups = gameState.pickups ?? [];
+  if (pickups.length === 0) {
+    return;
+  }
+
+  context.save();
+  for (const pickup of pickups) {
+    const center = worldToScreen(pickup.position);
+    const size = pickupVisualSizePx;
+    const left = Math.round(center.x - size / 2);
+    const top = Math.round(center.y - size / 2);
+    const innerSize = size - pickupBorderPx * 2;
+
+    context.fillStyle = "#3a2600";
+    context.fillRect(left, top, size, size);
+    context.fillStyle = "#f7c547";
+    context.fillRect(left + pickupBorderPx, top + pickupBorderPx, innerSize, innerSize);
+    context.fillStyle = "#fff1a8";
+    context.fillRect(left + 4, top + 4, size - 8, 2);
+    context.fillRect(left + 4, top + 4, 2, size - 8);
+    context.fillStyle = "#101010";
+    drawPixelQuestionMark(center.x, center.y, pickupQuestionBlockPx);
+  }
+  context.restore();
+}
+
+function drawPixelQuestionMark(centerX: number, centerY: number, blockSize: number): void {
+  const glyph = ["1110", "0001", "0110", "0100", "0000", "0100"];
+  const width = glyph[0]!.length * blockSize;
+  const height = glyph.length * blockSize;
+  const left = Math.round(centerX - width / 2);
+  const top = Math.round(centerY - height / 2);
+  for (let row = 0; row < glyph.length; row += 1) {
+    const line = glyph[row]!;
+    for (let column = 0; column < line.length; column += 1) {
+      if (line[column] !== "1") {
+        continue;
+      }
+      context.fillRect(left + column * blockSize, top + row * blockSize, blockSize, blockSize);
+    }
+  }
 }
 
 function fillMapCellShape(
@@ -1121,6 +1421,9 @@ function drawAim(now: number, proxies: readonly BodyProxy[]): void {
   );
 
   drawLaunchPreviewLine(start, launch, inDeadZone, aimStrength, now);
+  if (!inDeadZone && playerHasTrajectoryPreview()) {
+    drawTrajectoryPreview(body, proxy, drag);
+  }
   context.restore();
 }
 
@@ -1154,6 +1457,185 @@ function drawLaunchPreviewLine(
   context.moveTo(start.x, start.y);
   context.lineTo(end.x, end.y);
   context.stroke();
+}
+
+function drawTrajectoryPreview(body: BodyState, proxy: BodyProxy, drag: Vec2): void {
+  const power = (length(drag) / maxDragDistance) * currentShotPowerLimit();
+  if (power <= 0) {
+    return;
+  }
+
+  const direction = transformVector(scale(drag, -1), proxy.transformToBody);
+  const shotIntent: ShotIntent = {
+    actorBodyId: body.id,
+    angle: Math.atan2(direction.y, direction.x),
+    power,
+    spinOffset: 0
+  };
+  const previewState = cloneGameState(gameState);
+  previewState.phase = "waiting_for_shot";
+  const result = simulateShot(
+    previewState,
+    currentMapData,
+    shotIntent,
+    trajectoryPreviewOptions
+  );
+  const collisionStep = result.events.find(
+    (event) =>
+      event.type === "collision" &&
+      event.bodyIds?.includes(body.id) &&
+      event.bodyIds.length > 1
+  )?.step ?? Number.POSITIVE_INFINITY;
+  const points = [
+    body.position,
+    ...(result.frames ?? [])
+      .filter((frame) => frame.step <= collisionStep)
+      .map((frame) => frame.state.bodies.find((candidate) => candidate.id === body.id)?.position)
+      .filter((point): point is Vec2 => point !== undefined)
+  ];
+  if (points.length < 2) {
+    return;
+  }
+
+  context.save();
+  context.lineWidth = 2;
+  context.lineCap = "round";
+  context.setLineDash([6, 7]);
+  context.strokeStyle = "rgba(247, 197, 71, 0.9)";
+  context.beginPath();
+  const first = worldToScreen(points[0]!);
+  context.moveTo(first.x, first.y);
+  for (const point of points.slice(1)) {
+    const screenPoint = worldToScreen(point);
+    context.lineTo(screenPoint.x, screenPoint.y);
+  }
+  context.stroke();
+  context.restore();
+}
+
+function drawActionTargetHints(proxies: readonly BodyProxy[]): void {
+  if (isTeleportMode()) {
+    const selectedBody = selectedBodyId
+      ? gameState.bodies.find((body) => body.id === selectedBodyId)
+      : undefined;
+    const selectedProxy = selectedBody
+      ? selectedProxyForBody(selectedBody.id, proxies)
+      : undefined;
+    context.save();
+    context.lineWidth = 2;
+    context.setLineDash([8, 8]);
+    context.strokeStyle = "rgba(255,255,255,0.74)";
+    if (selectedProxy) {
+      const center = worldToScreen(selectedProxy.position);
+      context.beginPath();
+      context.arc(center.x, center.y, TELEPORT_RANGE * viewport.scale, 0, Math.PI * 2);
+      context.stroke();
+    } else {
+      for (const proxy of proxies) {
+        const body = gameState.bodies.find((candidate) => candidate.id === proxy.bodyId);
+        if (!body || !canTeleportBody(body)) {
+          continue;
+        }
+        const center = worldToScreen(proxy.position);
+        context.beginPath();
+        context.arc(center.x, center.y, proxy.radius * viewport.scale + 5, 0, Math.PI * 2);
+        context.stroke();
+      }
+    }
+    context.restore();
+    return;
+  }
+
+  if (isAnchorMode()) {
+    context.save();
+    context.lineWidth = 2;
+    context.setLineDash([3, 5]);
+    context.strokeStyle = "rgba(255,255,255,0.58)";
+    for (const proxy of proxies) {
+      const body = gameState.bodies.find((candidate) => candidate.id === proxy.bodyId);
+      if (!body?.alive) {
+        continue;
+      }
+      const center = worldToScreen(proxy.position);
+      context.beginPath();
+      context.arc(center.x, center.y, proxy.radius * viewport.scale + 6, 0, Math.PI * 2);
+      context.stroke();
+    }
+    context.restore();
+  }
+}
+
+function drawAnchorFields(): void {
+  context.save();
+  context.lineWidth = 2;
+  context.setLineDash([6, 6]);
+  context.strokeStyle = "rgba(255,255,255,0.42)";
+  for (const body of gameState.bodies) {
+    if (!body.alive) {
+      continue;
+    }
+    for (const modifier of body.modifiers) {
+      if (modifier.kind !== "anchor") {
+        continue;
+      }
+      const origin = vec2FromUnknown(modifier.data?.origin);
+      const radius = typeof modifier.data?.radius === "number"
+        ? modifier.data.radius
+        : body.radius * 2;
+      if (!origin || radius <= 0) {
+        continue;
+      }
+      const center = worldToScreen(origin);
+      context.beginPath();
+      context.arc(center.x, center.y, radius * viewport.scale, 0, Math.PI * 2);
+      context.stroke();
+    }
+  }
+  context.restore();
+}
+
+function drawPlaybackEffects(): void {
+  const playback = authoritativePlayback;
+  if (!playback) {
+    return;
+  }
+  const currentStep = playback.elapsedSeconds / simulationOptions.fixedDt;
+  for (const event of playback.resolved.events) {
+    if (event.type !== "bomb_exploded") {
+      continue;
+    }
+    const position = vec2FromUnknown(event.data?.position);
+    const radius = typeof event.data?.radius === "number" ? event.data.radius : 0;
+    if (!position || radius <= 0) {
+      continue;
+    }
+    const durationSteps = 24;
+    const age = currentStep - event.step;
+    if (age < 0 || age > durationSteps) {
+      continue;
+    }
+    const progress = clampNumber(age / durationSteps, 0, 1);
+    drawPixelShockwave(position, radius * progress, 1 - progress);
+  }
+}
+
+function drawPixelShockwave(position: Vec2, radius: number, alpha: number): void {
+  const center = worldToScreen(position);
+  const pixelRadius = radius * viewport.scale;
+  if (pixelRadius <= 1) {
+    return;
+  }
+  const block = 2;
+  const segments = Math.max(24, Math.ceil(pixelRadius * 2.2));
+  context.save();
+  context.fillStyle = `rgba(255,255,255,${Math.max(0, alpha)})`;
+  for (let index = 0; index < segments; index += 1) {
+    const angle = (Math.PI * 2 * index) / segments;
+    const x = center.x + Math.cos(angle) * pixelRadius;
+    const y = center.y + Math.sin(angle) * pixelRadius;
+    context.fillRect(Math.round(x - block / 2), Math.round(y - block / 2), block, block);
+  }
+  context.restore();
 }
 
 function drawBodies(proxies: readonly BodyProxy[]): void {
@@ -1558,6 +2040,7 @@ function resetLocalState(nextState: typeof gameState, nextStateHash: string): vo
   awaitingShotId = undefined;
   authoritativePlayback = undefined;
   bodyTrailHistory.clear();
+  clearBonusInteractionState();
 }
 
 function canShoot(): boolean {
@@ -1578,11 +2061,68 @@ function canShoot(): boolean {
 }
 
 function canSelectBody(body: BodyState): boolean {
-  return canShoot() && body.ownerPlayerId === localPlayerId;
+  if (!canShoot() || body.ownerPlayerId !== localPlayerId) {
+    return false;
+  }
+  const constraint = gameState.activeActionConstraint;
+  if (!constraint || constraint.ownerPlayerId !== localPlayerId) {
+    return true;
+  }
+  return !constraint.actorBodyId || constraint.actorBodyId === body.id;
+}
+
+function isTeleportMode(): boolean {
+  return Boolean(
+    localPlayerId &&
+    gameState.activeActionConstraint?.kind === "teleport" &&
+    gameState.activeActionConstraint.ownerPlayerId === localPlayerId
+  );
+}
+
+function isAnchorMode(): boolean {
+  return Boolean(
+    localPlayerId &&
+    gameState.activeActionConstraint?.kind === "anchor" &&
+    gameState.activeActionConstraint.ownerPlayerId === localPlayerId
+  );
+}
+
+function canTeleportBody(body: BodyState): boolean {
+  return Boolean(canShoot() && body.alive && body.ownerPlayerId === localPlayerId);
+}
+
+function canResolveBonus(): boolean {
+  const hasOwnedOptions = Boolean(
+    localPlayerId &&
+    gameState.playerBonuses?.some(
+      (bonus) => bonus.playerId === localPlayerId && bonus.options.length > 0
+    )
+  );
+  return Boolean(
+    socket.connected &&
+    roomId !== null &&
+    localPlayerId !== undefined &&
+    (
+      hasOwnedOptions ||
+      (gameState.phase === "choosing_bonus" &&
+        gameState.pendingBonusChoice?.playerId === localPlayerId) ||
+      (gameState.phase === "waiting_for_shot" &&
+        gameState.currentPlayerId === localPlayerId)
+    )
+  );
+}
+
+function currentShotPowerLimit(): number {
+  return localPlayerId ? shotPowerLimitForPlayer(gameState, localPlayerId) : maxShotPower;
+}
+
+function playerHasTrajectoryPreview(): boolean {
+  return Boolean(localPlayerId && hasTrajectoryPreviewCharge(gameState, localPlayerId));
 }
 
 function updateHud(): void {
   renderRoomPanel();
+  renderBonusPanel();
   if (!roomId) {
     hudSummary.textContent = connectionState;
     hudBody.textContent = "Create or join a room";
@@ -1593,12 +2133,28 @@ function updateHud(): void {
   const activePlayer = playerLabel(gameState.currentPlayerId);
   const me = localPlayerId ? playerLabel(localPlayerId) : "?";
   const stateText = hudStateText();
+  const shrinkDisplay = visualShrinkCircle.enabled ? visualShrinkCircle : shrinkCircle;
   const shrinkText = shrinkCircle.enabled
-    ? ` | Shrink ${Math.round(shrinkCircle.progress * 100)}%`
+    ? ` | Shrink ${Math.round(shrinkDisplay.progress * 100)}%`
+    : "";
+  const actionText = gameState.activeActionConstraint
+    ? ` | Mode ${actionKindLabel(gameState.activeActionConstraint.kind)}`
+    : "";
+  const powerText = localPlayerId
+    ? ` | Power ${Math.round(currentShotPowerLimit() / PHYSICS_POWER_SCALE)}`
     : "";
 
-  hudSummary.textContent = `${stateText} | Turn ${gameState.turnIndex + 1}`;
-  hudBody.textContent = `Room ${roomId} | ${connectionState} | You ${me} | Active ${activePlayer} | Balls ${aliveCount}${shrinkText}`;
+  hudSummary.textContent = `${stateText} | Round ${currentRoundNumber()} | Action ${gameState.turnIndex + 1}`;
+  hudBody.textContent = `Room ${roomId} | ${connectionState} | You ${me} | Active ${activePlayer} | Balls ${aliveCount}${powerText}${actionText}${shrinkText}`;
+}
+
+function currentRoundNumber(): number {
+  if (typeof gameState.roundIndex === "number") {
+    return gameState.roundIndex + 1;
+  }
+  const orderLength = Math.max(1, gameState.players.length || players.length || 1);
+  const slotIndex = gameState.roundSlotIndex ?? gameState.turnIndex;
+  return Math.floor(slotIndex / orderLength) + 1;
 }
 
 function hudStateText(): string {
@@ -1617,6 +2173,127 @@ function hudStateText(): string {
   return allBodiesSleeping(gameState.bodies) ? "Settled" : "Rolling";
 }
 
+function renderBonusPanel(): void {
+  const bonusState = localPlayerId
+    ? gameState.playerBonuses?.find((bonus) => bonus.playerId === localPlayerId)
+    : undefined;
+  const options = bonusState?.options ?? [];
+  const activeChoice = canResolveBonus();
+  const buttonsEnabled = activeChoice && !bonusResolving;
+  const showPanel =
+    options.length > 0 ||
+    gameState.phase === "choosing_bonus" ||
+    bonusResolving ||
+    bonusMessage.length > 0;
+  const renderKey = bonusPanelKey(options, showPanel, buttonsEnabled);
+  if (bonusPanelRenderKey === renderKey) {
+    return;
+  }
+  bonusPanelRenderKey = renderKey;
+  bonusPanel.hidden = !showPanel;
+  if (!showPanel) {
+    bonusBody.replaceChildren();
+    bonusSummary.textContent = "No choices";
+    renderCollapsiblePanels();
+    return;
+  }
+
+  bonusSummary.textContent = bonusResolving
+    ? "Resolving..."
+    : options.length > 0
+      ? `${options.length} choice${options.length === 1 ? "" : "s"}`
+      : "Keep or wait";
+  const optionButtons = options.map((option) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "bonus-option";
+    button.dataset.bonusAction = "option";
+    button.dataset.bonusOptionId = option.id;
+    button.disabled = !buttonsEnabled;
+    button.textContent = bonusLabel(option.kind);
+    return button;
+  });
+  const keep = document.createElement("button");
+  keep.type = "button";
+  keep.className = "bonus-keep";
+  keep.dataset.bonusAction = "keep";
+  keep.disabled =
+    !buttonsEnabled || (options.length === 0 && gameState.phase !== "choosing_bonus");
+  keep.textContent = "Keep";
+  const wrapper = document.createElement("div");
+  wrapper.className = "bonus-options";
+  const children: HTMLElement[] = [...optionButtons, keep];
+  if (bonusMessage) {
+    const message = document.createElement("div");
+    message.className = `bonus-message${bonusResolving ? "" : " is-error"}`;
+    message.textContent = bonusMessage;
+    children.push(message);
+  }
+  wrapper.replaceChildren(...children);
+  bonusBody.replaceChildren(wrapper);
+  renderCollapsiblePanels();
+}
+
+function bonusPanelKey(
+  options: readonly { readonly id: string; readonly kind: BonusKind }[],
+  showPanel: boolean,
+  buttonsEnabled: boolean
+): string {
+  return [
+    showPanel ? "show" : "hide",
+    buttonsEnabled ? "enabled" : "disabled",
+    bonusResolving ? "resolving" : "idle",
+    bonusMessage,
+    roomId ?? "",
+    localPlayerId ?? "",
+    gameState.phase,
+    gameState.currentPlayerId,
+    gameState.pendingBonusChoice?.playerId ?? "",
+    options.map((option) => `${option.id}:${option.kind}`).join("|")
+  ].join("\n");
+}
+
+function invalidateBonusPanel(): void {
+  bonusPanelRenderKey = undefined;
+}
+
+function clearBonusInteractionState(): void {
+  bonusResolving = false;
+  bonusMessage = "";
+  invalidateBonusPanel();
+}
+
+function bonusLabel(kind: BonusKind): string {
+  switch (kind) {
+    case "power_stack":
+      return "Power cap +600";
+    case "trajectory_preview":
+      return "Long trajectory preview";
+    case "single_power_boost":
+      return "Next shot power +1000";
+    case "mass_up":
+      return "Source ball mass up, same size";
+    case "size_up":
+      return "Source ball bigger";
+    case "size_down":
+      return "Source ball smaller";
+    case "extra_action_any":
+      return "Extra action";
+    case "shuriken":
+      return "Shuriken action";
+    case "bomb":
+      return "Bomb action";
+    case "summon_half_ball":
+      return "Launch new half ball";
+    case "teleport":
+      return "Teleport action";
+    case "anchor":
+      return "Anchor a ball";
+    case "extra_action_on_elimination":
+      return "Extra action on ring-out";
+  }
+}
+
 function applyRoomState(payload: RoomStatePayload): void {
   const previousRoomId = roomId;
   const previousMapId = currentMapData.id;
@@ -1629,7 +2306,13 @@ function applyRoomState(payload: RoomStatePayload): void {
   }
   players = payload.players;
   currentMapData = payload.mapData;
-  shrinkCircle = payload.shrinkCircle;
+  if (previousRoomId !== payload.roomId || previousMapId !== payload.mapData.id) {
+    selectedOfficialMapId = payload.mapData.id;
+  }
+  setShrinkCircle(
+    payload.shrinkCircle,
+    previousRoomId === payload.roomId && previousMapId === payload.mapData.id
+  );
   shrinkCircleControlsDirty = false;
   if (previousRoomId !== payload.roomId || previousMapId !== payload.mapData.id) {
     viewport = createViewport();
@@ -1638,9 +2321,17 @@ function applyRoomState(payload: RoomStatePayload): void {
   renderRoomPanel();
 }
 
+function playOrQueueResolvedShot(payload: ShotResolvedPayload): void {
+  if (authoritativePlayback) {
+    pendingResolvedShots.push(payload);
+    return;
+  }
+  startAuthoritativePlayback(payload);
+}
+
 function startAuthoritativePlayback(payload: ShotResolvedPayload): void {
   if (payload.shrinkCircle) {
-    shrinkCircle = payload.shrinkCircle;
+    setShrinkCircle(payload.shrinkCircle, true);
   }
   const keyframes = buildPlaybackKeyframes(payload);
   if (keyframes.length < 2) {
@@ -1653,16 +2344,18 @@ function startAuthoritativePlayback(payload: ShotResolvedPayload): void {
     shotId: payload.shotId,
     keyframes,
     resolved: payload,
+    appliedMapEventKeys: new Set(),
     elapsedSeconds: 0
   };
   gameState = cloneGameState(keyframes[0]!.state);
   gameState.phase = "simulating";
+  applyPlaybackMapEventsUpToStep(0);
   bodyTrailHistory.clear();
 }
 
 function applyResolvedShot(payload: ShotResolvedPayload): void {
   if (payload.shrinkCircle) {
-    shrinkCircle = payload.shrinkCircle;
+    setShrinkCircle(payload.shrinkCircle, true);
   }
   if (payload.finalMapData) {
     currentMapData = payload.finalMapData;
@@ -1674,6 +2367,7 @@ function applyResolvedShot(payload: ShotResolvedPayload): void {
   awaitingShotId = undefined;
   authoritativePlayback = undefined;
   renderRoomPanel();
+  drainAuthoritativePlaybackQueue();
 }
 
 function updateAuthoritativePlayback(frameDt: number): void {
@@ -1683,6 +2377,7 @@ function updateAuthoritativePlayback(frameDt: number): void {
 
   authoritativePlayback.elapsedSeconds += frameDt;
   const elapsedStep = authoritativePlayback.elapsedSeconds / simulationOptions.fixedDt;
+  applyPlaybackMapEventsUpToStep(elapsedStep);
   const frames = authoritativePlayback.keyframes;
   const lastFrame = frames[frames.length - 1]!;
   if (elapsedStep >= lastFrame.step) {
@@ -1697,6 +2392,142 @@ function updateAuthoritativePlayback(frameDt: number): void {
   const t = clampNumber((elapsedStep - from.step) / span, 0, 1);
   gameState = interpolateGameState(from.state, to.state, t);
   gameState.phase = "simulating";
+}
+
+function applyPlaybackMapEventsUpToStep(step: number): void {
+  const playback = authoritativePlayback;
+  if (!playback) {
+    return;
+  }
+
+  playback.resolved.events.forEach((event, index) => {
+    if (!isMapChangeEvent(event.type) || event.step > step) {
+      return;
+    }
+    const key = `${event.type}:${event.step}:${index}`;
+    if (playback.appliedMapEventKeys.has(key)) {
+      return;
+    }
+    currentMapData = applyMapChangeEvent(currentMapData, event);
+    playback.appliedMapEventKeys.add(key);
+  });
+}
+
+function applyMapChangeEvent(
+  mapData: MapData,
+  event: ShotResolvedPayload["events"][number]
+): MapData {
+  const cells = mapPatchCells(event.data?.cells);
+  if (cells.length === 0) {
+    return mapData;
+  }
+
+  const next = cloneMapData(mapData);
+  if (event.type === "terrain_changed" && next.terrain) {
+    const terrain = next.terrain as unknown as {
+      cells: Array<{ material: GroundMaterial; shape: MapCellShape }>;
+    };
+    for (const cell of cells) {
+      if (cell.material === null || typeof cell.material !== "string") {
+        continue;
+      }
+      const index = cell.y * next.terrain.widthCells + cell.x;
+      if (index >= 0 && index < terrain.cells.length) {
+        terrain.cells[index] = {
+          material: cell.material as GroundMaterial,
+          shape: cell.shape
+        };
+      }
+    }
+  }
+  if (event.type === "obstacle_changed" && next.obstacles) {
+    const obstacles = next.obstacles as unknown as {
+      cells: Array<{ material: ObstacleMaterial; shape: MapCellShape } | null>;
+    };
+    for (const cell of cells) {
+      const index = cell.y * next.obstacles.widthCells + cell.x;
+      if (index < 0 || index >= obstacles.cells.length) {
+        continue;
+      }
+      obstacles.cells[index] =
+        cell.material === null
+          ? null
+          : {
+              material: cell.material as ObstacleMaterial,
+              shape: cell.shape
+            };
+    }
+  }
+  return next;
+}
+
+function isMapChangeEvent(type: string): boolean {
+  return type === "terrain_changed" || type === "obstacle_changed";
+}
+
+interface MapPatchCell {
+  readonly x: number;
+  readonly y: number;
+  readonly material: string | null;
+  readonly shape: MapCellShape;
+}
+
+function mapPatchCells(value: unknown): MapPatchCell[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item): MapPatchCell[] => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const record = item as Record<string, unknown>;
+    if (
+      typeof record.x !== "number" ||
+      typeof record.y !== "number" ||
+      !Number.isInteger(record.x) ||
+      !Number.isInteger(record.y)
+    ) {
+      return [];
+    }
+    const shape = typeof record.shape === "number" && isMapCellShape(record.shape)
+      ? record.shape
+      : 0;
+    if (record.material === null) {
+      return [{ x: record.x, y: record.y, material: null, shape }];
+    }
+    if (typeof record.material === "string") {
+      return [{ x: record.x, y: record.y, material: record.material, shape }];
+    }
+    return [];
+  });
+}
+
+function isMapCellShape(value: number): value is MapCellShape {
+  return value === 0 || value === 1 || value === 2 || value === 3 || value === 4;
+}
+
+function drainAuthoritativePlaybackQueue(): void {
+  if (authoritativePlayback) {
+    return;
+  }
+  const nextShot = pendingResolvedShots.shift();
+  if (nextShot) {
+    startAuthoritativePlayback(nextShot);
+    return;
+  }
+  const roomState = pendingRoomState;
+  pendingRoomState = undefined;
+  if (roomState) {
+    applyRoomState(roomState);
+  }
+}
+
+function isAuthoritativePlaybackBusy(): boolean {
+  return (
+    authoritativePlayback !== undefined ||
+    pendingResolvedShots.length > 0 ||
+    awaitingShotId !== undefined
+  );
 }
 
 function buildPlaybackKeyframes(payload: ShotResolvedPayload): PlaybackKeyframe[] {
@@ -1812,6 +2643,10 @@ function cloneGameState(state: GameState): GameState {
   return JSON.parse(JSON.stringify(state)) as GameState;
 }
 
+function cloneMapData(mapData: MapData): MapData {
+  return JSON.parse(JSON.stringify(mapData)) as MapData;
+}
+
 function cloneBody(body: BodyState): BodyState {
   return JSON.parse(JSON.stringify(body)) as BodyState;
 }
@@ -1821,6 +2656,16 @@ function createShotId(): string {
     return crypto.randomUUID();
   }
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function eventButton(target: EventTarget | null): HTMLElement | undefined {
+  if (target instanceof HTMLElement) {
+    return target;
+  }
+  if (target instanceof Node && target.parentElement) {
+    return target.parentElement;
+  }
+  return undefined;
 }
 
 function playerLabel(playerId: string): string {
@@ -1848,6 +2693,9 @@ function renderRoomPanel(): void {
   roomStartButton.disabled = !canStart;
   resetButton.disabled = !socket.connected || !inRoom || !isOwner;
   roomImportButton.disabled = !socket.connected || !canEditLobby;
+  roomOfficialMapSelect.disabled = !socket.connected || !canEditLobby;
+  roomUseMapButton.disabled =
+    !socket.connected || !canEditLobby || !isOfficialMapOption(selectedOfficialMapId);
   roomAddBotButton.disabled = !socket.connected || !canEditLobby || players.length >= 6;
   roomShrinkEnabledInput.disabled = !socket.connected || !canEditLobby;
   roomShrinkRoundsInput.disabled = !socket.connected || !canEditLobby;
@@ -1863,6 +2711,9 @@ function renderRoomPanel(): void {
   menuStatus.textContent = roomStatusText();
   roomSummary.textContent = roomSummaryText();
   roomStatus.textContent = roomStatusText();
+  syncOfficialMapSelect();
+  roomUseMapButton.disabled =
+    !socket.connected || !canEditLobby || !isOfficialMapOption(selectedOfficialMapId);
   roomMembers.replaceChildren(...players.map((player) => renderRoomMember(player, isOwner)));
   renderCollapsiblePanels();
 }
@@ -1937,8 +2788,58 @@ function roomSummaryText(): string {
   return `${roomId} | ${activePlayer}`;
 }
 
+function syncOfficialMapSelect(): void {
+  const currentIsOfficial = isOfficialMapOption(currentMapData.id);
+  setCustomMapOptionVisible(!currentIsOfficial);
+  if (!optionExists(selectedOfficialMapId)) {
+    selectedOfficialMapId = currentIsOfficial
+      ? currentMapData.id
+      : OFFICIAL_MAP_SUMMARIES[0]?.id ?? "";
+  }
+  roomOfficialMapSelect.value = selectedOfficialMapId;
+  const selectedSummary =
+    OFFICIAL_MAP_SUMMARIES.find((summary) => summary.id === selectedOfficialMapId);
+  if (selectedSummary) {
+    roomMapDescription.textContent =
+      selectedSummary.id === currentMapData.id
+        ? selectedSummary.description
+        : `Ready to switch to ${selectedSummary.name}.`;
+    return;
+  }
+  roomMapDescription.textContent = `Current custom map: ${currentMapData.id}`;
+}
+
+function isOfficialMapOption(mapId: string): boolean {
+  return OFFICIAL_MAP_SUMMARIES.some((summary) => summary.id === mapId);
+}
+
+function optionExists(value: string): boolean {
+  return [...roomOfficialMapSelect.options].some((option) => option.value === value);
+}
+
+function setCustomMapOptionVisible(visible: boolean): void {
+  const existing = roomOfficialMapSelect.querySelector<HTMLOptionElement>(
+    "option[data-custom-map]"
+  );
+  if (!visible) {
+    existing?.remove();
+    return;
+  }
+  if (existing) {
+    existing.value = currentMapData.id;
+    existing.textContent = `Custom: ${currentMapData.id}`;
+    return;
+  }
+  const option = document.createElement("option");
+  option.dataset.customMap = "true";
+  option.value = currentMapData.id;
+  option.textContent = `Custom: ${currentMapData.id}`;
+  roomOfficialMapSelect.prepend(option);
+}
+
 function renderCollapsiblePanels(): void {
   hud.classList.toggle("is-collapsed", hudCollapsed);
+  bonusPanel.classList.toggle("is-collapsed", bonusCollapsed);
   roomPanel.classList.toggle("is-collapsed", roomCollapsed);
 }
 
@@ -1966,24 +2867,48 @@ async function importRoomMap(input: HTMLInputElement): Promise<void> {
 
 function handleRoomError(payload: RoomErrorPayload): void {
   roomMessage = payload.message ?? payload.reason;
+  bonusResolving = false;
+  if (isBonusResolveError(payload.reason)) {
+    bonusMessage = payload.message ?? payload.reason;
+  }
+  invalidateBonusPanel();
   if (payload.reason === "kicked") {
+    const kickedRoomId = roomId ?? payload.roomId ?? null;
     clearRejoinToken();
     clearRoomState();
+    ignoredRoomId = kickedRoomId;
+    setAppMode("menu");
   }
   renderRoomPanel();
+  renderBonusPanel();
+}
+
+function isBonusResolveError(reason: string): boolean {
+  return reason === "state_hash_mismatch" ||
+    reason === "not_bonus_player" ||
+    reason === "invalid_bonus_option" ||
+    reason === "wrong_action_mode" ||
+    reason === "invalid_teleport_target" ||
+    reason === "invalid_anchor_target" ||
+    reason === "action_requires_target";
 }
 
 function clearRoomState(): void {
+  awaitingShotId = undefined;
+  authoritativePlayback = undefined;
+  pendingRoomState = undefined;
+  pendingResolvedShots.length = 0;
   roomId = null;
   roomPhase = "lobby";
   ownerPlayerId = undefined;
   winnerPlayerId = undefined;
   localPlayerId = undefined;
   players = [];
-  shrinkCircle = defaultShrinkCircleState;
+  setShrinkCircle(defaultShrinkCircleState, false);
   shrinkCircleControlsDirty = false;
   roomMessage = "Create or join a room.";
   currentMapData = billiardsMapData;
+  selectedOfficialMapId = billiardsMapData.id;
   const nextState = createBilliardsGameState();
   nextState.phase = "lobby";
   nextState.currentPlayerId = "";
@@ -2090,6 +3015,22 @@ function clampDrag(drag: Vec2): Vec2 {
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function vec2FromUnknown(value: unknown): Vec2 | undefined {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "x" in value &&
+    "y" in value
+  ) {
+    const x = (value as { x?: unknown }).x;
+    const y = (value as { y?: unknown }).y;
+    if (typeof x === "number" && typeof y === "number") {
+      return { x, y };
+    }
+  }
+  return undefined;
 }
 
 function pointerPosition(event: MouseEvent): Vec2 {

@@ -2,30 +2,62 @@ import { describe, expect, it } from "vitest";
 import type { BodyState } from "../types/body";
 import type { GameState } from "../types/game";
 import type { MapData } from "../types/map";
-import { PHYSICS_POWER_SCALE, PHYSICS_UNIT_SCALE } from "../physics/units";
+import { PHYSICS_UNIT_SCALE } from "../physics/units";
+import { BASE_SHOT_POWER_LIMIT } from "../rules/pickups";
 import { chooseBotShot } from "./chooseBotShot";
-
-const candidatePowers = [10, 20].map((power) => power * PHYSICS_POWER_SCALE);
+import { resolveBotOptions } from "./botOptions";
+import { generateCandidates } from "./generateCandidates";
 
 describe("chooseBotShot", () => {
-  it("returns a legal ShotIntent within configured candidate ranges", () => {
-    const shot = chooseBotShot(gameState, mapData, "disc-a", {
-      maxCandidates: 6,
-      maxThinkTimeMs: 100,
-      powers: candidatePowers,
-      spinOffsets: [0]
+  it("generates 40 weighted random candidates plus direct ring-out opportunities", () => {
+    const candidates = generateCandidates(
+      gameState,
+      mapData,
+      "p1",
+      resolveBotOptions({ maxCandidates: 40, rngSeed: 9 })
+    );
+
+    expect(candidates.length).toBeGreaterThan(40);
+    expect(
+      candidates.some(
+        (candidate) =>
+          candidate.actorBodyId === "disc-a" &&
+          candidate.power === BASE_SHOT_POWER_LIMIT &&
+          Math.abs(candidate.angle) < 0.000001
+      )
+    ).toBe(true);
+    expect(candidates.slice(0, 40).every((candidate) => candidate.power >= 0)).toBe(true);
+    expect(candidates.slice(0, 40).every((candidate) => candidate.power <= BASE_SHOT_POWER_LIMIT))
+      .toBe(true);
+  });
+
+  it("returns a legal ShotIntent for the bot player", () => {
+    const shot = chooseBotShot(gameState, mapData, "p1", {
+      maxCandidates: 8,
+      rngSeed: 5
     });
 
+    expect(shot).toBeDefined();
+    if (!shot) {
+      throw new Error("bot should choose a shot");
+    }
     expect(shot.actorBodyId).toBe("disc-a");
     expect(shot.angle).toBeGreaterThanOrEqual(0);
     expect(shot.angle).toBeLessThanOrEqual(Math.PI * 2);
-    expect(candidatePowers).toContain(shot.power);
+    expect(shot.power).toBeGreaterThanOrEqual(0);
+    expect(shot.power).toBeLessThanOrEqual(BASE_SHOT_POWER_LIMIT);
     expect(shot.spinOffset).toBe(0);
   });
 });
 
 const mapData: MapData = {
   id: "arena",
+  tableBounds: {
+    left: -20 * PHYSICS_UNIT_SCALE,
+    top: -50 * PHYSICS_UNIT_SCALE,
+    right: 125 * PHYSICS_UNIT_SCALE,
+    bottom: 50 * PHYSICS_UNIT_SCALE
+  },
   colliders: [],
   triggers: [],
   portals: []
@@ -42,7 +74,7 @@ const gameState: GameState = {
     { id: "p2", teamId: "blue" }
   ],
   bodies: [
-    makeBody("disc-a", "p1", "red", { x: 0, y: 0 }),
+    makeBody("disc-a", "p1", "red", { x: 20 * PHYSICS_UNIT_SCALE, y: 0 }),
     makeBody("disc-b", "p2", "blue", { x: 100 * PHYSICS_UNIT_SCALE, y: 0 })
   ],
   effects: [],

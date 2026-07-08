@@ -41,6 +41,10 @@ io.on("connection", (socket) => {
     roomManager.handleImportMap(socket, payload);
   });
 
+  socket.on("room:select_official_map", (payload) => {
+    roomManager.handleSelectOfficialMap(socket, payload);
+  });
+
   socket.on("room:add_bot", (payload) => {
     roomManager.handleAddBot(socket, payload);
   });
@@ -51,6 +55,18 @@ io.on("connection", (socket) => {
 
   socket.on("room:start", () => {
     roomManager.handleStart(socket);
+  });
+
+  socket.on("bonus:resolve", (payload) => {
+    roomManager.handleResolveBonus(socket, payload);
+  });
+
+  socket.on("bonus:teleport", (payload) => {
+    roomManager.handleTeleportBonus(socket, payload);
+  });
+
+  socket.on("bonus:anchor", (payload) => {
+    roomManager.handleAnchorBonus(socket, payload);
   });
 
   socket.on("room:reset", () => {

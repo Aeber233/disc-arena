@@ -6,6 +6,12 @@ import type { SimulationEvent, SimulationOptions } from "../types/simulation";
 import { add, length, scale, sub } from "../math/vec2";
 import { dissipateCloudTerrain, popAirbagsFromCollisions } from "../map/dynamicMaterials";
 import { terrainDampingMultiplierAtPoint } from "../map/editableMap";
+import {
+  applyAnchorConstraints,
+  bodyHasDisabledCollision,
+  collectPickups,
+  updateGhostCollisionStates
+} from "../rules/pickups";
 import { solveCollisions } from "./collisions/solveCollisions";
 import { commitPortalTransitions } from "./portals/commitPortalTransitions";
 import { buildBodyProxies } from "./proxies/buildBodyProxies";
@@ -42,9 +48,11 @@ export function stepWorld(
   applySpinCurve(state.bodies, options.fixedDt);
   integrateVelocity(state.bodies, options.fixedDt);
   integratePosition(state.bodies, options.fixedDt);
+  events.push(...updateGhostCollisionStates(state, step));
   events.push(...dissipateCloudTerrain(mapData, state.bodies, previousPositions, step));
 
-  const proxies = buildBodyProxies(state.bodies, mapData);
+  const collisionBodies = state.bodies.filter((body) => !bodyHasDisabledCollision(body));
+  const proxies = buildBodyProxies(collisionBodies, mapData);
   const proxySnapshots = snapshotProxies(proxies);
   const collisionResult = solveCollisions(
     proxies,
@@ -58,7 +66,9 @@ export function stepWorld(
   events.push(...popAirbagsFromCollisions(mapData, state.bodies, collisionResult.events, step));
 
   mapProxyImpulsesBackToBodies(collisionResult.proxies, state.bodies, proxySnapshots);
+  events.push(...applyAnchorConstraints(state.bodies, step));
   events.push(...resolveTriggers(state.bodies, mapData, options.fixedDt, step));
+  events.push(...collectPickups(state, step, previousPositions));
   applyDamping(
     state.bodies,
     options.fixedDt,

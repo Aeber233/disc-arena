@@ -166,11 +166,8 @@ export function popAirbagsFromCollisions(
           continue;
         }
 
-        const center = {
-          x: obstacles.origin.x + (x + 0.5) * obstacles.cellSize,
-          y: obstacles.origin.y + (y + 0.5) * obstacles.cellSize
-        };
-        if (distancePointToSegment(center, popSegment.start, popSegment.end) > obstacles.cellSize * 0.55) {
+        const polygon = obstaclePolygonForCell(obstacles, x, y, cell.shape);
+        if (distanceSegmentToPolygon(popSegment.start, popSegment.end, polygon) > obstacles.cellSize * 0.02) {
           continue;
         }
 
@@ -323,6 +320,36 @@ function obstacleEdgesForCell(
   return edges([topLeft, topRight, bottomRight, bottomLeft]);
 }
 
+function obstaclePolygonForCell(
+  obstacles: Pick<MutableObstacleData, "origin" | "cellSize">,
+  x: number,
+  y: number,
+  shape: MapCellShape
+): readonly Vec2[] {
+  const left = obstacles.origin.x + x * obstacles.cellSize;
+  const top = obstacles.origin.y + y * obstacles.cellSize;
+  const right = left + obstacles.cellSize;
+  const bottom = top + obstacles.cellSize;
+  const topLeft = { x: left, y: top };
+  const topRight = { x: right, y: top };
+  const bottomRight = { x: right, y: bottom };
+  const bottomLeft = { x: left, y: bottom };
+
+  if (shape === 1) {
+    return [topLeft, topRight, bottomLeft];
+  }
+  if (shape === 2) {
+    return [topLeft, topRight, bottomRight];
+  }
+  if (shape === 3) {
+    return [topRight, bottomRight, bottomLeft];
+  }
+  if (shape === 4) {
+    return [topLeft, bottomRight, bottomLeft];
+  }
+  return [topLeft, topRight, bottomRight, bottomLeft];
+}
+
 function edges(points: readonly Vec2[]) {
   return points.map((point, index) => ({
     start: point,
@@ -351,6 +378,93 @@ function distancePointToSegment(point: Vec2, start: Vec2, end: Vec2): number {
   }
   const t = clamp(dot(sub(point, start), segment) / lengthSquared, 0, 1);
   return length(sub(point, add(start, scale(segment, t))));
+}
+
+function distanceSegmentToPolygon(start: Vec2, end: Vec2, polygon: readonly Vec2[]): number {
+  if (isPointInsidePolygon(start, polygon) || isPointInsidePolygon(end, polygon)) {
+    return 0;
+  }
+
+  let minDistance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < polygon.length; index += 1) {
+    const edgeStart = polygon[index]!;
+    const edgeEnd = polygon[(index + 1) % polygon.length]!;
+    if (segmentsIntersect(start, end, edgeStart, edgeEnd)) {
+      return 0;
+    }
+    minDistance = Math.min(
+      minDistance,
+      distancePointToSegment(start, edgeStart, edgeEnd),
+      distancePointToSegment(end, edgeStart, edgeEnd),
+      distancePointToSegment(edgeStart, start, end),
+      distancePointToSegment(edgeEnd, start, end)
+    );
+  }
+  return minDistance;
+}
+
+function isPointInsidePolygon(point: Vec2, polygon: readonly Vec2[]): boolean {
+  let inside = false;
+  for (let index = 0, previousIndex = polygon.length - 1; index < polygon.length; previousIndex = index, index += 1) {
+    const current = polygon[index]!;
+    const previous = polygon[previousIndex]!;
+    if (isPointOnSegment(point, previous, current)) {
+      return true;
+    }
+    const crosses =
+      current.y > point.y !== previous.y > point.y &&
+      point.x <
+        ((previous.x - current.x) * (point.y - current.y)) /
+          (previous.y - current.y) +
+          current.x;
+    if (crosses) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function segmentsIntersect(aStart: Vec2, aEnd: Vec2, bStart: Vec2, bEnd: Vec2): boolean {
+  const a = orientation(aStart, aEnd, bStart);
+  const b = orientation(aStart, aEnd, bEnd);
+  const c = orientation(bStart, bEnd, aStart);
+  const d = orientation(bStart, bEnd, aEnd);
+
+  if (a === 0 && isPointOnSegment(bStart, aStart, aEnd)) {
+    return true;
+  }
+  if (b === 0 && isPointOnSegment(bEnd, aStart, aEnd)) {
+    return true;
+  }
+  if (c === 0 && isPointOnSegment(aStart, bStart, bEnd)) {
+    return true;
+  }
+  if (d === 0 && isPointOnSegment(aEnd, bStart, bEnd)) {
+    return true;
+  }
+  return a !== b && c !== d;
+}
+
+function orientation(a: Vec2, b: Vec2, c: Vec2): -1 | 0 | 1 {
+  const value = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  if (Math.abs(value) <= 0.000001) {
+    return 0;
+  }
+  return value > 0 ? 1 : -1;
+}
+
+function isPointOnSegment(point: Vec2, start: Vec2, end: Vec2): boolean {
+  return (
+    Math.abs(cross(sub(point, start), sub(end, start))) <= 0.000001 &&
+    point.x >= Math.min(start.x, end.x) - 0.000001 &&
+    point.x <= Math.max(start.x, end.x) + 0.000001 &&
+    point.y >= Math.min(start.y, end.y) - 0.000001 &&
+    point.y <= Math.max(start.y, end.y) + 0.000001
+  );
+}
+
+function cross(a: Vec2, b: Vec2): number {
+  return a.x * b.y - a.y * b.x;
 }
 
 function isGridPointInsideCellShape(point: Vec2, shape: MapCellShape): boolean {

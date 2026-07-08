@@ -21,7 +21,7 @@ export interface ShrinkCircleState {
 
 export const DEFAULT_SHRINK_CIRCLE_SETTINGS: ShrinkCircleSettings = {
   enabled: false,
-  collapseRounds: 4
+  collapseRounds: 10
 };
 
 export const MIN_SHRINK_COLLAPSE_ROUNDS = 1;

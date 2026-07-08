@@ -1,11 +1,15 @@
 import type { Server, Socket } from "socket.io";
 import type {
+  BonusAnchorPayload,
+  BonusResolvePayload,
+  BonusTeleportPayload,
   ClientToServerEvents,
   RoomAddBotPayload,
   RoomCreatePayload,
   RoomImportMapPayload,
   RoomJoinPayload,
   RoomKickPayload,
+  RoomSelectOfficialMapPayload,
   RoomUpdateShrinkCirclePayload,
   ServerToClientEvents,
   ShotSubmitPayload
@@ -97,9 +101,7 @@ export class RoomManager {
     socket.leave(roomId);
     this.socketToRoom.delete(socket.id);
     this.broadcast(room);
-    if (this.emitBotTurns(room)) {
-      this.broadcast(room);
-    }
+    this.scheduleBotTurns(room);
     this.cleanup(room);
   }
 
@@ -142,6 +144,21 @@ export class RoomManager {
     const result = room.importMap(socket.id, payload.encodedMap);
     if (!result.ok) {
       this.emitError(socket, result.error.reason, result.error.message ?? "Could not import map.");
+      return;
+    }
+    this.broadcast(room);
+  }
+
+  handleSelectOfficialMap(socket: DiscSocket, payload: RoomSelectOfficialMapPayload): void {
+    const room = this.roomForSocket(socket);
+    if (!room) {
+      this.emitError(socket, "not_in_room", "You are not in a room.");
+      return;
+    }
+
+    const result = room.selectOfficialMap(socket.id, payload.mapId);
+    if (!result.ok) {
+      this.emitError(socket, result.error.reason, result.error.message ?? "Could not select map.");
       return;
     }
     this.broadcast(room);
@@ -194,9 +211,7 @@ export class RoomManager {
       return;
     }
     this.broadcast(room);
-    if (this.emitBotTurns(room)) {
-      this.broadcast(room);
-    }
+    this.scheduleBotTurns(room);
   }
 
   handleReset(socket: DiscSocket): void {
@@ -234,9 +249,55 @@ export class RoomManager {
 
     this.io.to(room.getRoomId()).emit("shot:started", result.started);
     this.io.to(room.getRoomId()).emit("shot:resolved", result.resolved);
-    if (this.emitBotTurns(room)) {
-      this.broadcast(room);
+    this.scheduleBotTurns(room);
+  }
+
+  handleResolveBonus(socket: DiscSocket, payload: BonusResolvePayload): void {
+    const room = this.roomForSocket(socket);
+    if (!room) {
+      this.emitError(socket, "not_in_room", "You are not in a room.");
+      return;
     }
+
+    const result = room.resolveBonus(socket.id, payload);
+    if (!result.ok) {
+      this.emitError(socket, result.error.reason, result.error.message ?? "Could not resolve bonus.");
+      return;
+    }
+    this.broadcast(room);
+    this.scheduleBotTurns(room);
+  }
+
+  handleTeleportBonus(socket: DiscSocket, payload: BonusTeleportPayload): void {
+    const room = this.roomForSocket(socket);
+    if (!room) {
+      this.emitError(socket, "not_in_room", "You are not in a room.");
+      return;
+    }
+
+    const result = room.resolveTeleport(socket.id, payload);
+    if (!result.ok) {
+      this.emitError(socket, result.error.reason, result.error.message ?? "Could not teleport.");
+      return;
+    }
+    this.broadcast(room);
+    this.scheduleBotTurns(room);
+  }
+
+  handleAnchorBonus(socket: DiscSocket, payload: BonusAnchorPayload): void {
+    const room = this.roomForSocket(socket);
+    if (!room) {
+      this.emitError(socket, "not_in_room", "You are not in a room.");
+      return;
+    }
+
+    const result = room.resolveAnchor(socket.id, payload);
+    if (!result.ok) {
+      this.emitError(socket, result.error.reason, result.error.message ?? "Could not anchor.");
+      return;
+    }
+    this.broadcast(room);
+    this.scheduleBotTurns(room);
   }
 
   handleDisconnect(socket: DiscSocket): void {
@@ -248,9 +309,7 @@ export class RoomManager {
     room.disconnect(socket.id);
     this.socketToRoom.delete(socket.id);
     this.broadcast(room);
-    if (this.emitBotTurns(room)) {
-      this.broadcast(room);
-    }
+    this.scheduleBotTurns(room);
     this.cleanup(room);
   }
 
@@ -261,6 +320,18 @@ export class RoomManager {
 
   private broadcast(room: DiscArenaRoom): void {
     this.io.to(room.getRoomId()).emit("room:state", room.snapshot());
+  }
+
+  private scheduleBotTurns(room: DiscArenaRoom): void {
+    const roomId = room.getRoomId();
+    setTimeout(() => {
+      if (this.rooms.get(roomId) !== room) {
+        return;
+      }
+      if (this.emitBotTurns(room)) {
+        this.broadcast(room);
+      }
+    }, 0);
   }
 
   private emitBotTurns(room: DiscArenaRoom): boolean {

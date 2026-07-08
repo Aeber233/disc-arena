@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  addEditableBallPlacement,
   billiardsEditableMapDocument,
   createDefaultEditableMapDocument,
   encodeEditableMapDocument,
+  PICKUP_RADIUS,
   PHYSICS_POWER_SCALE
 } from "@disc-arena/core";
+import type { GameState } from "@disc-arena/core";
 import { DiscArenaRoom } from "./room";
 
 function createStartedRoom() {
@@ -19,6 +22,31 @@ function createStartedRoom() {
     throw new Error(`failed to start test room: ${started.error.reason}`);
   }
   return { room, playerOne: playerOne.payload, playerTwo: playerTwo.payload };
+}
+
+function mutableGameState(room: DiscArenaRoom): GameState {
+  return (room as unknown as { gameState: GameState }).gameState;
+}
+
+function createBotTestMap(): string {
+  let document = createDefaultEditableMapDocument();
+  for (const center of [
+    { x: 12, y: 12 },
+    { x: 18, y: 12 },
+    { x: 24, y: 12 }
+  ]) {
+    const next = addEditableBallPlacement(document, center, "10px");
+    if (!next) {
+      throw new Error("failed to place bot test ball");
+    }
+    document = next;
+  }
+
+  return encodeEditableMapDocument({
+    ...document,
+    id: "bot-test-map",
+    name: "Bot Test Map"
+  });
 }
 
 describe("DiscArenaRoom", () => {
@@ -135,7 +163,17 @@ describe("DiscArenaRoom", () => {
   });
 
   it("runs bot turns through the same shot intent pipeline as humans", () => {
-    const room = new DiscArenaRoom("1234", 4);
+    const room = new DiscArenaRoom("1234", 4, {
+      simulationOptions: {
+        mode: "authoritative",
+        fixedDt: 1 / 20,
+        maxSteps: 1,
+        collisionIterations: 1,
+        recordFrames: false,
+        frameIntervalSteps: 1,
+        quantize: true
+      }
+    });
     const host = room.join({ socketId: "socket-1" });
     if (!host.ok) {
       throw new Error("failed to join test room");
@@ -143,6 +181,10 @@ describe("DiscArenaRoom", () => {
     const bot = room.addBot("socket-1");
     if (!bot.ok) {
       throw new Error("failed to add bot");
+    }
+    const imported = room.importMap("socket-1", createBotTestMap());
+    if (!imported.ok) {
+      throw new Error("failed to import bot test map");
     }
 
     const started = room.start("socket-1");
@@ -157,8 +199,97 @@ describe("DiscArenaRoom", () => {
     expect(botShots).toHaveLength(1);
     expect(botShots[0]?.started.playerId).toMatch(/^bot-/);
     expect(botShots[0]?.started.shotIntent).toEqual(botShots[0]?.resolved.shotIntent);
-    expect(botShots[0]?.resolved.shotIntent.power).toBe(0);
+    expect(botShots[0]?.resolved.shotIntent.actorBodyId).toBeTruthy();
+    expect(botShots[0]?.resolved.shotIntent.power).toBeGreaterThanOrEqual(0);
+    expect(botShots[0]?.resolved.shotIntent.power).toBeLessThanOrEqual(1500 * PHYSICS_POWER_SCALE);
+    expect(botShots[0]?.resolved.frames).toHaveLength(0);
     expect(room.snapshot().currentPlayerId).toBe(host.payload.playerId);
+  });
+
+  it("waits for a human bonus choice in a human versus bot room", () => {
+    const room = new DiscArenaRoom("1234", 20260703);
+    const host = room.join({ socketId: "socket-1", playerName: "Host" });
+    if (!host.ok) {
+      throw new Error("failed to join test room");
+    }
+    const bot = room.addBot("socket-1");
+    if (!bot.ok) {
+      throw new Error("failed to add bot");
+    }
+    const started = room.start("socket-1");
+    if (!started.ok) {
+      throw new Error(`failed to start test room: ${started.error.reason}`);
+    }
+
+    const state = mutableGameState(room);
+    state.currentPlayerId = host.payload.playerId;
+    state.phase = "waiting_for_shot";
+    const ownedBody = state.bodies.find(
+      (body) => body.ownerPlayerId === host.payload.playerId
+    );
+    if (!ownedBody) {
+      throw new Error("host should own at least one body");
+    }
+    state.pickups = [
+      {
+        id: "human-bot-forced-pickup",
+        position: { ...ownedBody.position },
+        radius: PICKUP_RADIUS,
+        spawnedTurnIndex: state.turnIndex
+      }
+    ];
+
+    const shot = room.submitShot("socket-1", {
+      shotId: "human-bot-pickup",
+      turnIndex: state.turnIndex,
+      knownStateHash: room.stateHash(),
+      shotIntent: {
+        actorBodyId: ownedBody.id,
+        angle: 0,
+        power: 1,
+        spinOffset: 0
+      }
+    });
+
+    expect(shot.ok).toBe(true);
+    if (!shot.ok) {
+      throw new Error("pickup shot should be accepted");
+    }
+    expect(shot.resolved.finalState.phase).toBe("choosing_bonus");
+    expect(shot.resolved.finalState.pendingBonusChoice?.playerId).toBe(host.payload.playerId);
+
+    const staleChoice = room.resolveBonus("socket-1", { knownStateHash: "stale" });
+    expect(staleChoice.ok).toBe(false);
+    if (!staleChoice.ok) {
+      expect(staleChoice.error.reason).toBe("state_hash_mismatch");
+    }
+
+    const botShots = room.playBotTurns();
+    expect(botShots).toHaveLength(0);
+    expect(room.snapshot().gameState.phase).toBe("choosing_bonus");
+
+    const option = room
+      .snapshot()
+      .gameState.playerBonuses?.find((bonusState) => bonusState.playerId === host.payload.playerId)
+      ?.options[0];
+    if (!option) {
+      throw new Error("host should have a bonus option");
+    }
+
+    const choice = room.resolveBonus("socket-1", {
+      knownStateHash: room.stateHash(),
+      optionId: option.id
+    });
+
+    expect(choice.ok).toBe(true);
+    if (choice.ok) {
+      expect(choice.payload.gameState.phase).toBe("waiting_for_shot");
+      expect(
+        choice.payload.gameState.playerBonuses?.find(
+          (bonusState) => bonusState.playerId === host.payload.playerId
+        )?.options
+      ).toHaveLength(0);
+    }
   });
 
   it("rejects adding bots after the match starts", () => {
@@ -170,6 +301,82 @@ describe("DiscArenaRoom", () => {
     if (!added.ok) {
       expect(added.error.reason).toBe("room_in_progress");
     }
+  });
+
+  it("counts eliminated players as skipped normal action slots for round progression", () => {
+    const room = new DiscArenaRoom("1234", 20260707, {
+      simulationOptions: {
+        mode: "authoritative",
+        fixedDt: 1 / 20,
+        maxSteps: 1,
+        collisionIterations: 1,
+        recordFrames: false,
+        frameIntervalSteps: 1,
+        quantize: true
+      }
+    });
+    const one = room.join({ socketId: "socket-1" });
+    const two = room.join({ socketId: "socket-2" });
+    const three = room.join({ socketId: "socket-3" });
+    if (!one.ok || !two.ok || !three.ok) {
+      throw new Error("failed to join three-player room");
+    }
+    const started = room.start("socket-1");
+    if (!started.ok) {
+      throw new Error(`failed to start: ${started.error.reason}`);
+    }
+
+    const state = mutableGameState(room);
+    const orderedPlayers = [...state.players].sort(
+      (a, b) => (a.turnOrderIndex ?? 0) - (b.turnOrderIndex ?? 0)
+    );
+    const currentPlayerId = orderedPlayers[0]!.id;
+    const skippedPlayerId = orderedPlayers[1]!.id;
+    const nextActivePlayerId = orderedPlayers[2]!.id;
+    state.currentPlayerId = currentPlayerId;
+    state.turnIndex = 0;
+    state.roundSlotIndex = 0;
+    state.roundIndex = 0;
+    for (const body of state.bodies) {
+      if (body.ownerPlayerId === skippedPlayerId) {
+        body.alive = false;
+        body.sleep = true;
+      }
+    }
+    const actor = state.bodies.find(
+      (body) => body.alive && body.ownerPlayerId === currentPlayerId
+    );
+    if (!actor) {
+      throw new Error("current player needs an actor");
+    }
+
+    const result = room.submitShot(
+      currentPlayerId === one.payload.playerId
+        ? "socket-1"
+        : currentPlayerId === two.payload.playerId
+          ? "socket-2"
+          : "socket-3",
+      {
+        shotId: "shot-skip-eliminated",
+        turnIndex: state.turnIndex,
+        knownStateHash: room.stateHash(),
+        shotIntent: {
+          actorBodyId: actor.id,
+          angle: 0,
+          power: 1,
+          spinOffset: 0
+        }
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("shot should be accepted");
+    }
+    expect(result.resolved.finalState.turnIndex).toBe(2);
+    expect(result.resolved.finalState.roundSlotIndex).toBe(2);
+    expect(result.resolved.finalState.roundIndex).toBe(0);
+    expect(result.resolved.finalState.currentPlayerId).toBe(nextActivePlayerId);
   });
 
   it("lets the owner configure shrinking circle only in the lobby", () => {
@@ -303,6 +510,44 @@ describe("DiscArenaRoom", () => {
         billiardsEditableMapDocument.ballLayer.length
       );
     }
+  });
+
+  it("lets the owner select official maps in the lobby", () => {
+    const room = new DiscArenaRoom("1234", 1);
+    room.join({ socketId: "socket-1" });
+    room.join({ socketId: "socket-2" });
+
+    const selected = room.selectOfficialMap("socket-1", "airbag_square");
+
+    expect(selected.ok).toBe(true);
+    if (selected.ok) {
+      expect(selected.payload.mapData.id).toBe("airbag_square");
+      expect(selected.payload.gameState.mapId).toBe("airbag_square");
+      expect(
+        selected.payload.mapData.obstacles?.cells.some(
+          (cell) => cell?.material === "airbag"
+        )
+      ).toBe(true);
+    }
+  });
+
+  it("rejects non-owner, playing, and invalid official map selection", () => {
+    const room = new DiscArenaRoom("1234", 1);
+    room.join({ socketId: "socket-1" });
+    room.join({ socketId: "socket-2" });
+
+    const nonOwner = room.selectOfficialMap("socket-2", "airbag_square");
+    const invalid = room.selectOfficialMap("socket-1", "missing-map");
+    const started = room.start("socket-1");
+    const playing = room.selectOfficialMap("socket-1", "portal_cloud_square");
+
+    expect(nonOwner.ok).toBe(false);
+    if (!nonOwner.ok) expect(nonOwner.error.reason).toBe("not_room_owner");
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.error.reason).toBe("invalid_map");
+    expect(started.ok).toBe(true);
+    expect(playing.ok).toBe(false);
+    if (!playing.ok) expect(playing.error.reason).toBe("room_in_progress");
   });
 
   it("rejects non-owner, playing, invalid, and empty map imports", () => {
@@ -475,6 +720,233 @@ describe("DiscArenaRoom", () => {
       expect(result.resolved.finalState.currentPlayerId).not.toBe(snapshot.currentPlayerId);
       expect(result.resolved.events.length).toBeGreaterThan(0);
       expect(result.resolved.resultHash).toMatch(/^[0-9a-f]{8}$/);
+    }
+  });
+
+  it("rejects shots above the authoritative power cap", () => {
+    const { room, playerOne } = createStartedRoom();
+    const snapshot = room.snapshot();
+    const currentSocket = snapshot.currentPlayerId === playerOne.playerId ? "socket-1" : "socket-2";
+    const ownedBody = snapshot.gameState.bodies.find(
+      (body) => body.ownerPlayerId === snapshot.currentPlayerId
+    )!;
+
+    const result = room.submitShot(currentSocket, {
+      shotId: "shot-overpowered",
+      turnIndex: snapshot.gameState.turnIndex,
+      knownStateHash: room.stateHash(),
+      shotIntent: {
+        actorBodyId: ownedBody.id,
+        angle: 0,
+        power: 1600 * PHYSICS_POWER_SCALE,
+        spinOffset: 0
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.rejected.reason).toBe("shot_power_too_high");
+    }
+  });
+
+  it("enters bonus choice after collecting a pickup and keeps options on skip", () => {
+    const { room, playerOne } = createStartedRoom();
+    const state = mutableGameState(room);
+    const currentPlayerId = state.currentPlayerId;
+    const currentSocket = currentPlayerId === playerOne.playerId ? "socket-1" : "socket-2";
+    const ownedBody = state.bodies.find((body) => body.ownerPlayerId === currentPlayerId)!;
+    state.pickups = [
+      {
+        id: "forced-pickup",
+        position: { ...ownedBody.position },
+        radius: PICKUP_RADIUS,
+        spawnedTurnIndex: state.turnIndex
+      }
+    ];
+
+    const result = room.submitShot(currentSocket, {
+      shotId: "shot-pickup",
+      turnIndex: state.turnIndex,
+      knownStateHash: room.stateHash(),
+      shotIntent: {
+        actorBodyId: ownedBody.id,
+        angle: 0,
+        power: 1,
+        spinOffset: 0
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("pickup shot should be accepted");
+    }
+    expect(result.resolved.finalState.phase).toBe("choosing_bonus");
+    expect(result.resolved.finalState.currentPlayerId).toBe(currentPlayerId);
+    expect(
+      result.resolved.finalState.playerBonuses?.find((bonus) => bonus.playerId === currentPlayerId)
+        ?.options
+    ).toHaveLength(2);
+
+    const rejected = room.submitShot(currentSocket, {
+      shotId: "shot-before-choice",
+      turnIndex: result.resolved.finalState.turnIndex,
+      knownStateHash: room.stateHash(),
+      shotIntent: {
+        actorBodyId: ownedBody.id,
+        angle: 0,
+        power: 1,
+        spinOffset: 0
+      }
+    });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) {
+      expect(rejected.rejected.reason).toBe("room_not_waiting_for_shot");
+    }
+
+    const kept = room.resolveBonus(currentSocket, { knownStateHash: room.stateHash() });
+    expect(kept.ok).toBe(true);
+    if (kept.ok) {
+      expect(kept.payload.gameState.phase).toBe("waiting_for_shot");
+      expect(
+        kept.payload.gameState.playerBonuses?.find((bonus) => bonus.playerId === currentPlayerId)
+          ?.options
+      ).toHaveLength(2);
+    }
+  });
+
+  it("fires shuriken as a temporary projectile instead of moving the source ball back", () => {
+    const { room, playerOne } = createStartedRoom();
+    const state = mutableGameState(room);
+    state.currentPlayerId = playerOne.playerId;
+    state.phase = "waiting_for_shot";
+    const ownedBody = state.bodies.find((body) => body.ownerPlayerId === playerOne.playerId)!;
+    const originalPosition = { ...ownedBody.position };
+    state.activeActionConstraint = {
+      id: "test-shuriken",
+      kind: "shuriken",
+      ownerPlayerId: playerOne.playerId,
+      createdTurnIndex: state.turnIndex,
+      actorBodyId: ownedBody.id
+    };
+
+    const result = room.submitShot("socket-1", {
+      shotId: "shot-shuriken",
+      turnIndex: state.turnIndex,
+      knownStateHash: room.stateHash(),
+      shotIntent: {
+        actorBodyId: ownedBody.id,
+        angle: 0,
+        power: 900 * PHYSICS_POWER_SCALE,
+        spinOffset: 0
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("shuriken shot should be accepted");
+    }
+    const spawned = result.resolved.events.find((event) => event.type === "body_spawned");
+    expect(spawned?.data?.reason).toBe("shuriken");
+    expect(result.resolved.events.some((event) => event.type === "body_destroyed")).toBe(true);
+    const finalSource = result.resolved.finalState.bodies.find((body) => body.id === ownedBody.id);
+    expect(finalSource?.position).toEqual(originalPosition);
+    expect(
+      result.resolved.finalState.bodies.some((body) => body.id === spawned?.data?.bodyId)
+    ).toBe(false);
+  });
+
+  it("summons a persistent half-size ball with shuriken launch rules", () => {
+    const { room, playerOne } = createStartedRoom();
+    const state = mutableGameState(room);
+    state.currentPlayerId = playerOne.playerId;
+    state.phase = "waiting_for_shot";
+    const ownedBody = state.bodies.find((body) => body.ownerPlayerId === playerOne.playerId)!;
+    state.activeActionConstraint = {
+      id: "test-summon",
+      kind: "summon_half_ball",
+      ownerPlayerId: playerOne.playerId,
+      createdTurnIndex: state.turnIndex,
+      actorBodyId: ownedBody.id
+    };
+
+    const result = room.submitShot("socket-1", {
+      shotId: "shot-summon",
+      turnIndex: state.turnIndex,
+      knownStateHash: room.stateHash(),
+      shotIntent: {
+        actorBodyId: ownedBody.id,
+        angle: 0,
+        power: 900 * PHYSICS_POWER_SCALE,
+        spinOffset: 0
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("summon shot should be accepted");
+    }
+    const spawned = result.resolved.events.find((event) => event.type === "body_spawned");
+    const spawnedBody = result.resolved.finalState.bodies.find(
+      (body) => body.id === spawned?.data?.bodyId
+    );
+    expect(spawned?.data?.reason).toBe("summon_half_ball");
+    expect(spawnedBody?.alive).toBe(true);
+    expect(spawnedBody?.ownerPlayerId).toBe(playerOne.playerId);
+    expect(spawnedBody?.radius ?? Number.POSITIVE_INFINITY).toBeLessThan(ownedBody.radius);
+    expect(spawnedBody?.mass ?? Number.POSITIVE_INFINITY).toBeLessThan(ownedBody.mass);
+  });
+
+  it("resolves teleport and anchor target bonus actions", () => {
+    const { room, playerOne, playerTwo } = createStartedRoom();
+    const state = mutableGameState(room);
+    state.currentPlayerId = playerOne.playerId;
+    state.phase = "waiting_for_shot";
+    const ownedBody = state.bodies.find((body) => body.ownerPlayerId === playerOne.playerId)!;
+    state.activeActionConstraint = {
+      id: "test-teleport",
+      kind: "teleport",
+      ownerPlayerId: playerOne.playerId,
+      createdTurnIndex: state.turnIndex
+    };
+
+    const teleported = room.resolveTeleport("socket-1", {
+      knownStateHash: room.stateHash(),
+      bodyId: ownedBody.id,
+      position: { ...ownedBody.position }
+    });
+
+    expect(teleported.ok).toBe(true);
+    if (!teleported.ok) {
+      throw new Error("teleport should resolve");
+    }
+    expect(teleported.payload.gameState.activeActionConstraint).toBeUndefined();
+
+    const nextState = mutableGameState(room);
+    nextState.currentPlayerId = playerOne.playerId;
+    nextState.phase = "waiting_for_shot";
+    const targetBody = nextState.bodies.find((body) => body.ownerPlayerId === playerTwo.playerId)!;
+    nextState.activeActionConstraint = {
+      id: "test-anchor",
+      kind: "anchor",
+      ownerPlayerId: playerOne.playerId,
+      createdTurnIndex: nextState.turnIndex
+    };
+
+    const anchored = room.resolveAnchor("socket-1", {
+      knownStateHash: room.stateHash(),
+      bodyId: targetBody.id
+    });
+
+    expect(anchored.ok).toBe(true);
+    if (anchored.ok) {
+      const anchoredBody = anchored.payload.gameState.bodies.find(
+        (body) => body.id === targetBody.id
+      );
+      expect(
+        anchoredBody?.modifiers.some(
+          (modifier) => modifier.kind === "anchor" && modifier.ownerId === playerOne.playerId
+        )
+      ).toBe(true);
     }
   });
 

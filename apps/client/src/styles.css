@@ -161,6 +161,66 @@ body {
   line-height: 1.35;
 }
 
+.bonus-panel {
+  top: 150px;
+  left: 16px;
+  width: min(360px, calc(100vw - 32px));
+}
+
+.bonus-panel[hidden] {
+  display: none;
+}
+
+.bonus-options {
+  display: grid;
+  gap: 8px;
+}
+
+.bonus-option,
+.bonus-keep {
+  min-height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 5px;
+  background: rgba(248, 248, 243, 0.08);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.bonus-option {
+  text-align: left;
+  padding: 7px 10px;
+}
+
+.bonus-keep {
+  padding: 0 10px;
+  background: rgba(247, 197, 71, 0.14);
+}
+
+.bonus-message {
+  min-height: 18px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.bonus-message.is-error {
+  color: #ffb2b2;
+}
+
+.bonus-option:not(:disabled):hover,
+.bonus-keep:not(:disabled):hover {
+  background: rgba(248, 248, 243, 0.18);
+}
+
+.bonus-option:disabled,
+.bonus-keep:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 #play-panel[hidden] {
   display: none;
 }
@@ -206,7 +266,8 @@ body {
 }
 
 .room-panel button,
-.room-panel input {
+.room-panel input,
+.room-panel select {
   height: 34px;
   border: 1px solid rgba(255, 255, 255, 0.34);
   border-radius: 5px;
@@ -215,7 +276,8 @@ body {
   font: inherit;
 }
 
-.room-panel input {
+.room-panel input,
+.room-panel select {
   padding: 0 10px;
 }
 
@@ -226,13 +288,15 @@ body {
 }
 
 .room-panel button:disabled,
-.room-panel input:disabled {
+.room-panel input:disabled,
+.room-panel select:disabled {
   opacity: 0.45;
   cursor: default;
 }
 
 .room-panel button:not(:disabled):hover,
-.room-panel input:not(:disabled):hover {
+.room-panel input:not(:disabled):hover,
+.room-panel select:not(:disabled):hover {
   background: rgba(248, 248, 243, 0.18);
 }
 
@@ -246,6 +310,33 @@ body {
 .room-actions button {
   flex: 1;
   min-width: 82px;
+}
+
+.room-map-controls {
+  align-items: center;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  background: rgba(120, 190, 255, 0.08);
+}
+
+.room-map-controls label {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.room-map-controls select {
+  flex: 1;
+  min-width: 0;
+}
+
+.room-map-description {
+  min-height: 18px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 .room-shrink-controls {

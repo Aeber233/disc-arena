@@ -71,6 +71,42 @@ describe("dynamic map materials", () => {
     );
     expect(events[0]?.type).toBe("obstacle_changed");
     expect(events[0]?.data?.reason).toBe("airbag_popped");
+    expect(events[0]?.step).toBe(collision.step);
+  });
+
+  it("pops airbag cells even when the collision is on a cell corner", () => {
+    let document = createDefaultEditableMapDocument();
+    document = applyEditableMapBrush(document, {
+      layer: "obstacle",
+      tool: "add",
+      brushSize: 1,
+      cellX: 12,
+      cellY: 12,
+      groundMaterial: "grass",
+      obstacleMaterial: "airbag"
+    });
+    const mapData = editableMapToMapData(document);
+    const body = makeBody("body-airbag-corner", {
+      x: 12 * EDITOR_MAP_CELL_SIZE,
+      y: 12 * EDITOR_MAP_CELL_SIZE
+    });
+    const collision: SimulationEvent = {
+      type: "wall_collision",
+      step: 5,
+      bodyIds: [body.id],
+      data: {
+        material: "airbag",
+        collisionPoint: {
+          x: 12 * EDITOR_MAP_CELL_SIZE,
+          y: 12 * EDITOR_MAP_CELL_SIZE
+        }
+      }
+    };
+
+    const events = popAirbagsFromCollisions(mapData, [body], [collision], collision.step);
+
+    expect(mapData.obstacles?.cells[12 + 12 * document.widthCells]).toBeNull();
+    expect(events[0]?.type).toBe("obstacle_changed");
   });
 });
 

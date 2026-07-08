@@ -1,6 +1,7 @@
 export * from "./math/vec2";
 
 export * from "./types/body";
+export * from "./types/bonus";
 export * from "./types/effect";
 export * from "./types/game";
 export * from "./types/map";
@@ -27,9 +28,11 @@ export * from "./physics/portals/commitPortalTransitions";
 export * from "./map/testMap";
 export * from "./map/editableMap";
 export * from "./map/dynamicMaterials";
+export * from "./map/officialMaps";
 export * from "./map/pixelBodySizes";
 export * from "./map/billiardsMap";
 export * from "./rules/matchRules";
+export * from "./rules/pickups";
 export * from "./rules/outOfBounds";
 export * from "./rules/shrinkCircle";
 
